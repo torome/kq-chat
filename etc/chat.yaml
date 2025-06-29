@@ -1,3 +1,16 @@
 Name: chat
 Host: 0.0.0.0
 Port: 8211
+
+ArkAPIKey:
+ArkChatModel:
+ArkEmbeddingModel:
+RedisAddr:
+LogDir:
+Debug: false
+
+# 监控配置
+ApmplusAppKey:
+ApmplusRegion:
+LangfusePublicKey:
+LangfuseSecretKey:
