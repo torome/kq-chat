@@ -11,12 +11,15 @@ require (
 	github.com/cloudwego/eino-ext/components/document/loader/file v0.0.0-20250626134119-cf4f96ea0039
 	github.com/cloudwego/eino-ext/components/document/transformer/splitter/markdown v0.0.0-20250626134119-cf4f96ea0039
 	github.com/cloudwego/eino-ext/components/embedding/openai v0.0.0-20250626134119-cf4f96ea0039
+	github.com/cloudwego/eino-ext/components/indexer/es8 v0.0.0-20250626134119-cf4f96ea0039
 	github.com/cloudwego/eino-ext/components/indexer/redis v0.0.0-20250626134119-cf4f96ea0039
 	github.com/cloudwego/eino-ext/components/model/deepseek v0.0.0-20250626134119-cf4f96ea0039
 	github.com/cloudwego/eino-ext/components/model/openai v0.0.0-20250626134119-cf4f96ea0039
+	github.com/cloudwego/eino-ext/components/retriever/es8 v0.0.0-20250626134119-cf4f96ea0039
 	github.com/cloudwego/eino-ext/components/retriever/redis v0.0.0-20250626134119-cf4f96ea0039
 	github.com/cloudwego/eino-ext/components/tool/duckduckgo v0.0.0-20250626134119-cf4f96ea0039
 	github.com/cloudwego/hertz v0.10.0
+	github.com/elastic/go-elasticsearch/v8 v8.18.1
 	github.com/go-resty/resty/v2 v2.16.5
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0
 	github.com/google/uuid v1.6.0
@@ -49,6 +52,7 @@ require (
 	github.com/cohesion-org/deepseek-go v1.3.2 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/elastic/elastic-transport-go/v8 v8.7.0 // indirect
 	github.com/evanphx/json-patch v0.5.2 // indirect
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect

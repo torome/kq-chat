@@ -92,8 +92,6 @@ func (l *WebsocketLogic) handleSendMessage(data interface{}) {
 
 // 使用 Agent 进行真实的流式响应
 func (l *WebsocketLogic) handleAgentStreamResponse(data types.SendMessageReq, recordId string) {
-	//var events []types.StreamEvent
-
 	// 1. 如果启用搜索，发送搜索事件（可选）
 	if data.SearchEnable {
 		searchEvent := types.StreamEvent{
@@ -119,7 +117,6 @@ func (l *WebsocketLogic) handleAgentStreamResponse(data types.SendMessageReq, re
 	l.sendEvent(thinkingEvent)
 
 	// 3. 调用 Agent 进行流式处理
-	// 使用对话ID或生成一个会话ID
 	conversationID := data.ConversationId
 	if conversationID == "" {
 		conversationID = recordId
@@ -146,9 +143,11 @@ func (l *WebsocketLogic) handleAgentStreamResponse(data types.SendMessageReq, re
 	}
 	defer streamReader.Close()
 
-	// 4. 处理 Agent 的流式输出
+	// 4. 处理 Agent 的流式输出 - 修复空内容问题
 	var fullContent strings.Builder
-	for {
+	streamFinished := false
+
+	for !streamFinished {
 		select {
 		case <-l.ctx.Done():
 			l.Info("Context cancelled, stopping stream")
@@ -156,11 +155,12 @@ func (l *WebsocketLogic) handleAgentStreamResponse(data types.SendMessageReq, re
 		default:
 			msg, err := streamReader.Recv()
 			if err == io.EOF {
-				l.Info("Agent stream finished")
+				l.Infof("Agent stream completed for record: %s", recordId)
+				streamFinished = true
 				break
 			}
 			if err != nil {
-				l.Errorf("Error receiving from agent: %v", err)
+				l.Errorf("Error receiving from agent (record: %s): %v", recordId, err)
 				// 发送错误并结束
 				errorEvent := types.StreamEvent{
 					Type:     "text",
@@ -169,8 +169,14 @@ func (l *WebsocketLogic) handleAgentStreamResponse(data types.SendMessageReq, re
 					Role:     "assistant",
 				}
 				l.sendEvent(errorEvent)
-				l.sendFinishEvent(recordId)
-				return
+				streamFinished = true
+				break
+			}
+
+			// 检查消息内容是否为空 - 关键修复
+			if msg.Content == "" {
+				l.Debugf("Received empty content message, skipping (record: %s)", recordId)
+				continue // 跳过空内容的消息
 			}
 
 			// 累积完整内容
@@ -189,6 +195,7 @@ func (l *WebsocketLogic) handleAgentStreamResponse(data types.SendMessageReq, re
 
 	// 5. 发送结束事件
 	l.sendFinishEvent(recordId)
+	l.Infof("Message handling completed for record: %s, content length: %d", recordId, fullContent.Len())
 }
 
 // 发送单个事件

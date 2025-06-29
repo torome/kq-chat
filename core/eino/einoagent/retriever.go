@@ -1,81 +1,93 @@
-/*
- * Copyright 2025 CloudWeGo Authors
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package einoagent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"os"
-	"strconv"
-
-	redispkg "ai-agent/core/redis"
-	"github.com/cloudwego/eino/schema"
-	redisCli "github.com/redis/go-redis/v9"
-
-	"github.com/cloudwego/eino-ext/components/retriever/redis"
+	"github.com/cloudwego/eino-ext/components/retriever/es8"
+	"github.com/cloudwego/eino-ext/components/retriever/es8/search_mode"
 	"github.com/cloudwego/eino/components/retriever"
+	"github.com/cloudwego/eino/schema"
+	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
+	"os"
+
+	espkg "ai-agent/core/elasticsearch"
 )
 
-// newRetriever component initialization function of node 'RedisRetriever' in graph 'EinoAgent'
+// newRetriever component initialization function of node 'ElasticsearchRetriever' in graph 'EinoAgent'
 func newRetriever(ctx context.Context) (rtr retriever.Retriever, err error) {
-	// TODO Modify component configuration here.
-	redisAddr := os.Getenv("REDIS_ADDR")
-	redisPwd := os.Getenv("REDIS_PWD")
-	redisClient := redisCli.NewClient(&redisCli.Options{
-		Addr:     redisAddr,
-		Password: redisPwd,
-		Protocol: 2,
-	})
-	config := &redis.RetrieverConfig{
-		Client:       redisClient,
-		Index:        fmt.Sprintf("%s%s", redispkg.RedisPrefix, redispkg.IndexName),
-		Dialect:      2,
-		ReturnFields: []string{redispkg.ContentField, redispkg.MetadataField, redispkg.DistanceField},
-		TopK:         8,
-		VectorField:  redispkg.VectorField,
-		DocumentConverter: func(ctx context.Context, doc redisCli.Document) (*schema.Document, error) {
-			resp := &schema.Document{
-				ID:       doc.ID,
-				Content:  "",
+	indexName := os.Getenv("ELASTICSEARCH_INDEX_NAME")
+	if indexName == "" {
+		indexName = "eino-knowledge-base"
+	}
+
+	config := &es8.RetrieverConfig{
+		Client: espkg.GetClient(),
+		Index:  indexName,
+		SearchMode: search_mode.SearchModeDenseVectorSimilarity(
+			search_mode.DenseVectorSimilarityTypeCosineSimilarity,
+			espkg.ContentVectorField,
+		),
+		ResultParser: func(ctx context.Context, hit types.Hit) (*schema.Document, error) {
+			doc := &schema.Document{
+				ID:       *hit.Id_,
 				MetaData: map[string]any{},
 			}
-			for field, val := range doc.Fields {
-				if field == redispkg.ContentField {
-					resp.Content = val
-				} else if field == redispkg.MetadataField {
-					resp.MetaData[field] = val
-				} else if field == redispkg.DistanceField {
-					distance, err := strconv.ParseFloat(val, 64)
-					if err != nil {
-						continue
+
+			var src map[string]any
+			if err := json.Unmarshal(hit.Source_, &src); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal source: %w", err)
+			}
+
+			// 处理各个字段
+			for field, val := range src {
+				switch field {
+				case espkg.ContentField:
+					if content, ok := val.(string); ok {
+						doc.Content = content
 					}
-					resp.WithScore(1 - distance)
+				case espkg.MetadataField:
+					if metadataStr, ok := val.(string); ok {
+						var metadata map[string]any
+						if err := json.Unmarshal([]byte(metadataStr), &metadata); err == nil {
+							for k, v := range metadata {
+								doc.MetaData[k] = v
+							}
+						}
+					}
+				case espkg.ContentVectorField:
+					if vector, ok := val.([]interface{}); ok {
+						var v []float64
+						for _, item := range vector {
+							if f, ok := item.(float64); ok {
+								v = append(v, f)
+							}
+						}
+						doc.WithDenseVector(v)
+					}
+				case espkg.KnowledgeNameField:
+					if knowledgeName, ok := val.(string); ok {
+						doc.MetaData[espkg.KnowledgeNameField] = knowledgeName
+					}
 				}
 			}
 
-			return resp, nil
+			// 设置相似度分数
+			if hit.Score_ != nil {
+				doc.WithScore(float64(*hit.Score_))
+			}
+
+			return doc, nil
 		},
 	}
-	embeddingIns11, err := newEmbedding(ctx)
+
+	embeddingIns, err := newEmbedding(ctx)
 	if err != nil {
 		return nil, err
 	}
-	config.Embedding = embeddingIns11
-	rtr, err = redis.NewRetriever(ctx, config)
+	config.Embedding = embeddingIns
+
+	rtr, err = es8.NewRetriever(ctx, config)
 	if err != nil {
 		return nil, err
 	}

@@ -5,11 +5,17 @@ import "github.com/zeromicro/go-zero/rest"
 type Config struct {
 	rest.RestConf
 
+	// Elasticsearch 配置 (替换Redis配置)
+	ElasticsearchAddr     string `json:",env=ELASTICSEARCH_ADDR,default=http://localhost:9200"`
+	ElasticsearchUsername string `json:",env=ELASTICSEARCH_USERNAME,optional"`
+	ElasticsearchPassword string `json:",env=ELASTICSEARCH_PASSWORD,optional"`
+	ElasticsearchIndex    string `json:",env=ELASTICSEARCH_INDEX_NAME,default=eino-knowledge-base"`
+	
 	// Agent 配置
 	ArkAPIKey         string `json:",env=ARK_API_KEY"`
 	ArkChatModel      string `json:",env=ARK_CHAT_MODEL"`
 	ArkEmbeddingModel string `json:",env=ARK_EMBEDDING_MODEL"`
-	RedisAddr         string `json:",default=localhost:6379"`
+	RedisAddr         string `json:",default=49.235.180.215:6379"`
 	LogDir            string `json:",default=log"`
 	Debug             bool   `json:",env=DEBUG,default=false"`
 
