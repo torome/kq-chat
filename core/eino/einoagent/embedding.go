@@ -18,8 +18,7 @@ package einoagent
 
 import (
 	"context"
-	"os"
-
+	"fmt"
 	"github.com/cloudwego/eino-ext/components/embedding/openai"
 	"github.com/cloudwego/eino/components/embedding"
 )
@@ -27,10 +26,11 @@ import (
 func newEmbedding(ctx context.Context) (eb embedding.Embedder, err error) {
 	// TODO Modify component configuration here.
 	config := &openai.EmbeddingConfig{
-		BaseURL: os.Getenv("ARK_BASEURL"),
-		Model:   os.Getenv("ARK_EMBEDDING_MODEL"),
-		APIKey:  os.Getenv("ARK_API_KEY"),
+		BaseURL: "https://api.siliconflow.cn/v1",                       //os.Getenv("ARK_BASEURL"),
+		Model:   "BAAI/bge-m3",                                         //os.Getenv("ARK_EMBEDDING_MODEL"),
+		APIKey:  "sk-yzwvyxeuhxdroxmjpzbotkqndwqclwtxbauggjzeuxtjdraw", //os.Getenv("ARK_API_KEY"),
 	}
+	fmt.Printf("****** config: %+v\n", config)
 	eb, err = openai.NewEmbedder(ctx, config)
 	if err != nil {
 		return nil, err

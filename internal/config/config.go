@@ -10,7 +10,13 @@ type Config struct {
 	ElasticsearchUsername string `json:",env=ELASTICSEARCH_USERNAME,optional"`
 	ElasticsearchPassword string `json:",env=ELASTICSEARCH_PASSWORD,optional"`
 	ElasticsearchIndex    string `json:",env=ELASTICSEARCH_INDEX_NAME,default=eino-knowledge-base"`
-	
+
+	// 知识库配置
+	ThinkingEnabled         bool    `json:",env=THINKING_ENABLED,default=true"`         // 是否启用知识库
+	KnowledgeEnabled        bool    `json:",env=KNOWLEDGE_ENABLED,default=true"`        // 是否启用知识库
+	KnowledgeScoreThreshold float64 `json:",env=KNOWLEDGE_SCORE_THRESHOLD,default=0.5"` // 相似度阈值
+	KnowledgeMaxResults     int     `json:",env=KNOWLEDGE_MAX_RESULTS,default=8"`       // 最大检索结果数
+
 	// Agent 配置
 	ArkAPIKey         string `json:",env=ARK_API_KEY"`
 	ArkChatModel      string `json:",env=ARK_CHAT_MODEL"`

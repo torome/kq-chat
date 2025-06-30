@@ -3,6 +3,7 @@ package elasticsearch
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 
@@ -15,20 +16,20 @@ import (
 var (
 	client   *elasticsearch.Client
 	initOnce sync.Once
+	initErr  error
 )
 
 func Init() error {
-	var err error
 	initOnce.Do(func() {
-		err = initElasticsearchClient()
+		initErr = initElasticsearchClient()
 	})
-	return err
+	return initErr
 }
 
 func initElasticsearchClient() error {
 	esAddr := os.Getenv("ELASTICSEARCH_ADDR")
 	if esAddr == "" {
-		esAddr = "http://localhost:9200"
+		esAddr = "http://49.235.180.215:9200"
 	}
 
 	esUsername := os.Getenv("ELASTICSEARCH_USERNAME")
@@ -39,8 +40,8 @@ func initElasticsearchClient() error {
 	}
 
 	if esUsername != "" && esPassword != "" {
-		config.Username = esUsername
-		config.Password = esPassword
+		config.Username = "elastic"
+		config.Password = "7U+IOR_ESxuMfJ2D=45P"
 	}
 
 	var err error
@@ -58,18 +59,37 @@ func initElasticsearchClient() error {
 	defer res.Body.Close()
 
 	if res.IsError() {
-		return fmt.Errorf("Elasticsearch ping failed with status: %s", res.Status())
+		return fmt.Errorf("elasticsearch ping failed with status: %s", res.Status())
 	}
 
+	log.Printf("Elasticsearch client initialized successfully, connected to: %s", esAddr)
 	return nil
 }
 
 func GetClient() *elasticsearch.Client {
+	if client == nil {
+		log.Printf("Elasticsearch client is nil, attempting to initialize...")
+		if err := Init(); err != nil {
+			log.Printf("Failed to initialize Elasticsearch client: %v", err)
+			return nil
+		}
+	}
+	return client
+}
+
+// MustGetClient 获取客户端，如果为空则panic
+func MustGetClient() *elasticsearch.Client {
+	client := GetClient()
+	if client == nil {
+		log.Fatal("Elasticsearch client is not initialized")
+	}
 	return client
 }
 
 // CreateIndexIfNotExists 创建索引（如果不存在）
 func CreateIndexIfNotExists(ctx context.Context, indexName string) error {
+	client := MustGetClient()
+
 	// 检查索引是否存在
 	existsResp, err := exists.NewExistsFunc(client)(indexName).Do(ctx)
 	if err != nil {
@@ -77,8 +97,11 @@ func CreateIndexIfNotExists(ctx context.Context, indexName string) error {
 	}
 
 	if existsResp {
+		log.Printf("Index %s already exists", indexName)
 		return nil // 索引已存在
 	}
+
+	log.Printf("Creating index: %s", indexName)
 
 	// 创建索引
 	_, err = create.NewCreateFunc(client)(indexName).Request(&create.Request{
@@ -106,6 +129,7 @@ func CreateIndexIfNotExists(ctx context.Context, indexName string) error {
 		return fmt.Errorf("failed to create index: %w", err)
 	}
 
+	log.Printf("Index %s created successfully", indexName)
 	return nil
 }
 

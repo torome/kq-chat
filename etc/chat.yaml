@@ -14,3 +14,8 @@ ApmplusAppKey:
 ApmplusRegion:
 LangfusePublicKey:
 LangfuseSecretKey:
+
+ThinkingEnabled: false
+KnowledgeEnabled: true
+KnowledgeScoreThreshold: 0.7
+KnowledgeMaxResults: 5

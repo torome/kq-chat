@@ -108,13 +108,15 @@ func (l *WebsocketLogic) handleAgentStreamResponse(data types.SendMessageReq, re
 	}
 
 	// 2. 发送思考过程事件
-	thinkingEvent := types.StreamEvent{
-		Type:             "thinking",
-		ReasoningContent: "正在分析您的问题并搜索相关信息...",
-		RecordId:         recordId,
-		Role:             "assistant",
+	if l.svcCtx.Config.ThinkingEnabled {
+		thinkingEvent := types.StreamEvent{
+			Type:             "thinking",
+			ReasoningContent: "正在分析您的问题并搜索相关信息...",
+			RecordId:         recordId,
+			Role:             "assistant",
+		}
+		l.sendEvent(thinkingEvent)
 	}
-	l.sendEvent(thinkingEvent)
 
 	// 3. 调用 Agent 进行流式处理
 	conversationID := data.ConversationId

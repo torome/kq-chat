@@ -17,7 +17,7 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		ArkAPIKey:         c.ArkAPIKey,
 		ArkChatModel:      c.ArkChatModel,
 		ArkEmbeddingModel: c.ArkEmbeddingModel,
-		RedisAddr:         c.RedisAddr,
+		//RedisAddr:         c.RedisAddr,
 		LogDir:            c.LogDir,
 		Debug:             c.Debug,
 		ApmplusAppKey:     c.ApmplusAppKey,
