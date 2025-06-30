@@ -3,6 +3,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -193,8 +194,11 @@ func (c *Client) Stream(ctx context.Context, conversationID, message string) (*s
 		History: conversation.GetMessages(),
 	}
 
+	// 创建工具回调处理器来捕获工具调用和返回
+	toolCallCapture := createToolCallbackHandler(conversation)
+
 	// 流式执行
-	sr, err := runner.Stream(ctx, userMessage, compose.WithCallbacks(c.cbHandler))
+	sr, err := runner.Stream(ctx, userMessage, compose.WithCallbacks(c.cbHandler, toolCallCapture))
 	if err != nil {
 		return nil, fmt.Errorf("failed to stream: %w", err)
 	}
@@ -232,4 +236,59 @@ func (c *Client) Stream(ctx context.Context, conversationID, message string) (*s
 	}()
 
 	return srs[0], nil
+}
+
+// createToolCallbackHandler 创建工具回调处理器（基于官方示例）
+func createToolCallbackHandler(conversation *mem.Conversation) callbacks.Handler {
+	fmt.Printf("222222222222222")
+	return callbacks.NewHandlerBuilder().
+		OnStartFn(func(ctx context.Context, info *callbacks.RunInfo, input callbacks.CallbackInput) context.Context {
+			// 捕获工具调用的开始
+			fmt.Printf("333333333333333333:%v", info)
+			if info.Type == "TaskManager" {
+				fmt.Printf("=== Tool Call Started ===\n")
+				fmt.Printf("Tool Name: %s\n", info.Name)
+				fmt.Printf("Tool Input: %+v\n", input)
+
+				// 保存工具调用信息
+				inputStr, _ := json.Marshal(input)
+				toolCallMsg := &schema.Message{
+					Role:    schema.Assistant,
+					Content: fmt.Sprintf("调用工具: %s，参数: %s", info.Name, string(inputStr)),
+				}
+				conversation.Append(toolCallMsg)
+				fmt.Printf("Saved tool call message\n")
+			}
+			return ctx
+		}).
+		OnEndFn(func(ctx context.Context, info *callbacks.RunInfo, output callbacks.CallbackOutput) context.Context {
+			// 捕获工具调用的结束
+			if info.Type == "TaskManager" {
+				fmt.Printf("=== Tool Call Ended ===\n")
+				fmt.Printf("Tool Name: %s\n", info.Name)
+				fmt.Printf("Tool Output: %+v\n", output)
+
+				// 构造工具返回消息
+				var outputStr string
+				if outputBytes, err := json.Marshal(output); err == nil {
+					outputStr = string(outputBytes)
+				} else {
+					outputStr = fmt.Sprintf("%v", output)
+				}
+
+				toolResultMsg := &schema.Message{
+					Role:    schema.Tool,
+					Content: outputStr,
+				}
+				conversation.Append(toolResultMsg)
+				fmt.Printf("Saved tool result message: %s\n", outputStr)
+			}
+			return ctx
+		}).
+		OnErrorFn(func(ctx context.Context, info *callbacks.RunInfo, err error) context.Context {
+			fmt.Printf("=== Tool Call Error ===\n")
+			fmt.Printf("Tool Name: %s, Error: %v\n", info.Name, err)
+			return ctx
+		}).
+		Build()
 }

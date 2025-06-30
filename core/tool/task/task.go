@@ -194,5 +194,7 @@ func (t *TaskToolImpl) Invoke(ctx context.Context, req *TaskRequest) (res *TaskR
 	}
 
 	res.Status = "success"
+
+	fmt.Printf("**** result: %+v", res)
 	return res, nil
 }
