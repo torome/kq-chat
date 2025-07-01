@@ -28,37 +28,38 @@ import (
 )
 
 func GetTools(ctx context.Context) ([]tool.BaseTool, error) {
-	einoAssistantTool, err := NewEinoAssistantTool(ctx)
-	if err != nil {
-		return nil, err
-	}
-
+	/*
+		einoAssistantTool, err := NewEinoAssistantTool(ctx)
+		if err != nil {
+			return nil, err
+		}
+	*/
 	toolTask, err := NewTaskTool(ctx)
 	if err != nil {
 		return nil, err
 	}
+	/*
+		toolOpen, err := NewOpenFileTool(ctx)
+		if err != nil {
+			return nil, err
+		}
 
-	toolOpen, err := NewOpenFileTool(ctx)
-	if err != nil {
-		return nil, err
-	}
+		toolGitClone, err := NewGitCloneFile(ctx)
+		if err != nil {
+			return nil, err
+		}
 
-	toolGitClone, err := NewGitCloneFile(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	toolDDGSearch, err := NewDDGSearch(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-
+		toolDDGSearch, err := NewDDGSearch(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+	*/
 	return []tool.BaseTool{
-		einoAssistantTool,
+		//einoAssistantTool,
 		toolTask,
-		toolOpen,
-		toolGitClone,
-		toolDDGSearch,
+		//toolOpen,
+		//toolGitClone,
+		//toolDDGSearch,
 	}, nil
 }
 

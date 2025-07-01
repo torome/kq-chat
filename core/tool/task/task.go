@@ -64,6 +64,8 @@ type TaskResponse struct {
 	TaskList []*Task `json:"task_list" jsonschema:"description=list of tasks"`
 
 	Error string `json:"error" jsonschema:"description=error message"`
+
+	Summary string `json:"summary" jsonschema:"description=operation summary for AI context"`
 }
 
 type TaskToolImpl struct {
@@ -120,9 +122,30 @@ func NewTaskTool(ctx context.Context, config *TaskToolConfig) (tn tool.BaseTool,
 }
 
 func (t *TaskToolImpl) ToEinoTool() (tool.BaseTool, error) {
-	return utils.InferTool("task_manager", "task manager tool, you can add, get, update, delete, list tasks", t.Invoke)
+	description := `
+任务管理工具，支持完整的任务生命周期管理。
+
+功能说明：
+- add: 创建新任务，需要提供title（必需）和content
+- update: 更新现有任务，需要提供id（必需）和要更新的字段
+- delete: 删除任务，需要提供id（必需）
+- list: 列出任务，可选择性过滤
+
+重要提示：
+1. 删除或更新任务时，如果用户没有提供具体的任务ID，请先查看对话历史中最近的任务操作结果
+2. 在任务操作结果中可以找到任务ID、标题等关键信息
+3. 当用户说"刚才的任务"、"上一个任务"时，使用历史中最近创建的任务ID
+4. 操作成功后会返回详细的任务信息，包含完整的任务ID
+
+使用示例：
+- 创建：{"action": "add", "task": {"title": "吃西瓜", "content": "晚上吃西瓜"}}
+- 删除：{"action": "delete", "task": {"id": "从历史记录中获取的任务ID"}}
+- 更新：{"action": "update", "task": {"id": "任务ID", "completed": true}}
+`
+	return utils.InferTool("task_manager", description, t.Invoke)
 }
 
+// 同时优化Invoke方法，在响应中提供更清晰的信息
 func (t *TaskToolImpl) Invoke(ctx context.Context, req *TaskRequest) (res *TaskResponse, err error) {
 	res = &TaskResponse{}
 
@@ -145,6 +168,8 @@ func (t *TaskToolImpl) Invoke(ctx context.Context, req *TaskRequest) (res *TaskR
 			return res, nil
 		}
 		res.TaskList = []*Task{req.Task}
+		// 添加操作摘要，便于AI理解
+		res.Summary = fmt.Sprintf("成功创建任务：%s（ID: %s）", req.Task.Title, req.Task.ID)
 
 	case ActionUpdate:
 		if req.Task == nil {
@@ -154,7 +179,7 @@ func (t *TaskToolImpl) Invoke(ctx context.Context, req *TaskRequest) (res *TaskR
 		}
 		if req.Task.ID == "" {
 			res.Status = "error"
-			res.Error = "id is required"
+			res.Error = "id is required for update action"
 			return res, nil
 		}
 		if err := t.config.Storage.Update(req.Task); err != nil {
@@ -162,7 +187,15 @@ func (t *TaskToolImpl) Invoke(ctx context.Context, req *TaskRequest) (res *TaskR
 			res.Error = fmt.Sprintf("failed to update task: %v", err)
 			return res, nil
 		}
-		res.TaskList = []*Task{req.Task}
+		// 获取更新后的任务信息
+		tasks, _ := t.config.Storage.List(&ListParams{})
+		for _, task := range tasks {
+			if task.ID == req.Task.ID {
+				res.TaskList = []*Task{task}
+				break
+			}
+		}
+		res.Summary = fmt.Sprintf("成功更新任务：%s（ID: %s）", req.Task.Title, req.Task.ID)
 
 	case ActionDelete:
 		if req.Task == nil || req.Task.ID == "" {
@@ -175,6 +208,7 @@ func (t *TaskToolImpl) Invoke(ctx context.Context, req *TaskRequest) (res *TaskR
 			res.Error = fmt.Sprintf("failed to delete task: %v", err)
 			return res, nil
 		}
+		res.Summary = fmt.Sprintf("成功删除任务（ID: %s）", req.Task.ID)
 
 	case ActionList:
 		if req.List == nil {
@@ -187,14 +221,14 @@ func (t *TaskToolImpl) Invoke(ctx context.Context, req *TaskRequest) (res *TaskR
 			return res, nil
 		}
 		res.TaskList = tasks
+		res.Summary = fmt.Sprintf("成功查询到 %d 个任务", len(tasks))
 
 	default:
 		res.Status = "error"
 		res.Error = fmt.Sprintf("unknown action: %s", req.Action)
+		return res, nil
 	}
 
 	res.Status = "success"
-
-	fmt.Printf("**** result: %+v", res)
 	return res, nil
 }

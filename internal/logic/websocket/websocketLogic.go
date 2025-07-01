@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"ai-agent/internal/svc/agent"
 	"ai-agent/internal/types"
 	"context"
 	"encoding/json"
@@ -75,7 +76,7 @@ func (l *WebsocketLogic) Websocket(w http.ResponseWriter, r *http.Request) error
 	return nil
 }
 
-// 处理发送消息 - 接入真实的 Agent 能力
+// 处理发送消息 - 接入真实的 Agent 能力并处理工具事件
 func (l *WebsocketLogic) handleSendMessage(data interface{}) {
 	dataBytes, _ := json.Marshal(data)
 	var sendData types.SendMessageReq
@@ -87,11 +88,11 @@ func (l *WebsocketLogic) handleSendMessage(data interface{}) {
 	recordId := fmt.Sprintf("record_%d", time.Now().UnixNano())
 
 	// 使用真实的 Agent 处理
-	l.handleAgentStreamResponse(sendData, recordId)
+	l.handleAgentStreamResponseWithTools(sendData, recordId)
 }
 
-// 使用 Agent 进行真实的流式响应
-func (l *WebsocketLogic) handleAgentStreamResponse(data types.SendMessageReq, recordId string) {
+// 使用 Agent 进行真实的流式响应并处理工具事件
+func (l *WebsocketLogic) handleAgentStreamResponseWithTools(data types.SendMessageReq, recordId string) {
 	// 1. 如果启用搜索，发送搜索事件（可选）
 	if data.SearchEnable {
 		searchEvent := types.StreamEvent{
@@ -118,14 +119,14 @@ func (l *WebsocketLogic) handleAgentStreamResponse(data types.SendMessageReq, re
 		l.sendEvent(thinkingEvent)
 	}
 
-	// 3. 调用 Agent 进行流式处理
+	// 3. 调用 Agent 进行流式处理（带工具事件）
 	conversationID := data.ConversationId
 	if conversationID == "" {
 		conversationID = recordId
 	}
 
-	// 调用 Agent 客户端
-	streamReader, err := l.svcCtx.AgentClient.Stream(
+	// 调用 Agent 客户端（带工具事件）
+	streamWrapper, err := l.svcCtx.AgentClient.StreamWithToolEvents(
 		l.ctx,
 		conversationID,
 		data.Msg,
@@ -143,11 +144,14 @@ func (l *WebsocketLogic) handleAgentStreamResponse(data types.SendMessageReq, re
 		l.sendFinishEvent(recordId)
 		return
 	}
-	defer streamReader.Close()
+	defer streamWrapper.Close()
 
-	// 4. 处理 Agent 的流式输出 - 修复空内容问题
+	// 4. 同时处理 Agent 的流式输出和工具事件
 	var fullContent strings.Builder
 	streamFinished := false
+
+	// 创建协程处理工具事件
+	go l.handleToolEvents(streamWrapper.ToolEvents())
 
 	for !streamFinished {
 		select {
@@ -155,7 +159,7 @@ func (l *WebsocketLogic) handleAgentStreamResponse(data types.SendMessageReq, re
 			l.Info("Context cancelled, stopping stream")
 			return
 		default:
-			msg, err := streamReader.Recv()
+			msg, err := streamWrapper.Recv()
 			if err == io.EOF {
 				l.Infof("Agent stream completed for record: %s", recordId)
 				streamFinished = true
@@ -175,7 +179,7 @@ func (l *WebsocketLogic) handleAgentStreamResponse(data types.SendMessageReq, re
 				break
 			}
 
-			// 检查消息内容是否为空 - 关键修复
+			// 检查消息内容是否为空
 			if msg.Content == "" {
 				l.Debugf("Received empty content message, skipping (record: %s)", recordId)
 				continue // 跳过空内容的消息
@@ -198,6 +202,33 @@ func (l *WebsocketLogic) handleAgentStreamResponse(data types.SendMessageReq, re
 	// 5. 发送结束事件
 	l.sendFinishEvent(recordId)
 	l.Infof("Message handling completed for record: %s, content length: %d", recordId, fullContent.Len())
+}
+
+// handleToolEvents 处理工具事件
+func (l *WebsocketLogic) handleToolEvents(toolEvents <-chan agent.ToolEvent) {
+	for toolEvent := range toolEvents {
+		l.Infof("Received tool event: %s", toolEvent.Type)
+
+		switch toolEvent.Type {
+		case "tool-call":
+			if event, ok := toolEvent.Event.(types.StreamEvent); ok {
+				// 工具调用开始，callResult为false
+				event.CallResult = false
+				l.sendEvent(event)
+				l.Infof("Sent tool-call event for record: %s", toolEvent.RecordId)
+			}
+		case "tool-result":
+			if event, ok := toolEvent.Event.(types.StreamEvent); ok {
+				// 工具调用完成，设置callResult为true
+				event.CallResult = true
+				l.sendEvent(event)
+				l.Infof("Sent tool-result event with callResult=true for record: %s", toolEvent.RecordId)
+			}
+		default:
+			l.Errorf("Unknown tool event type: %s", toolEvent.Type)
+		}
+	}
+	l.Info("Tool events channel closed")
 }
 
 // 发送单个事件

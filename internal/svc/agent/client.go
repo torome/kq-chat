@@ -1,4 +1,4 @@
-// internal/svc/agent/client.go 修复版本
+// internal/svc/agent/client.go 修改版本 - 添加工具事件传递
 package agent
 
 import (
@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/cloudwego/eino-ext/callbacks/apmplus"
 	"github.com/cloudwego/eino-ext/callbacks/langfuse"
@@ -15,33 +16,61 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 
-	"ai-agent/core/eino/einoagent"      // 使用正确的项目路径
-	espkg "ai-agent/core/elasticsearch" // 添加Elasticsearch包
+	"ai-agent/core/eino/einoagent"
+	espkg "ai-agent/core/elasticsearch"
 	"ai-agent/core/memory"
+	"ai-agent/internal/types"
 )
 
 type Config struct {
-	ArkAPIKey         string
-	ArkChatModel      string
-	ArkEmbeddingModel string
-	// 移除RedisAddr，添加Elasticsearch配置
+	ArkAPIKey             string
+	ArkChatModel          string
+	ArkEmbeddingModel     string
 	ElasticsearchAddr     string
 	ElasticsearchUsername string
 	ElasticsearchPassword string
 	ElasticsearchIndex    string
 	LogDir                string
 	Debug                 bool
-	// APMPlus 配置
-	ApmplusAppKey string
-	ApmplusRegion string
-	// Langfuse 配置
-	LangfusePublicKey string
-	LangfuseSecretKey string
+	ApmplusAppKey         string
+	ApmplusRegion         string
+	LangfusePublicKey     string
+	LangfuseSecretKey     string
+}
+
+// ToolEvent 工具事件结构
+type ToolEvent struct {
+	Type     string      `json:"type"`  // "tool-call" | "tool-result"
+	Event    interface{} `json:"event"` // 具体的事件数据
+	RecordId string      `json:"record_id"`
+}
+
+// StreamReaderWithToolEvents 包装流读取器和工具事件通道
+type StreamReaderWithToolEvents struct {
+	reader     *schema.StreamReader[*schema.Message]
+	toolEvents chan ToolEvent
+	ctx        context.Context
+	cancel     context.CancelFunc
+}
+
+func (s *StreamReaderWithToolEvents) Recv() (*schema.Message, error) {
+	return s.reader.Recv()
+}
+
+func (s *StreamReaderWithToolEvents) Close() error {
+	s.cancel()
+	close(s.toolEvents)
+	s.reader.Close()
+	return nil
+}
+
+func (s *StreamReaderWithToolEvents) ToolEvents() <-chan ToolEvent {
+	return s.toolEvents
 }
 
 type Client struct {
 	config    Config
-	memory    *mem.SimpleMemory // 使用正确的内存管理
+	memory    *mem.SimpleMemory
 	cbHandler callbacks.Handler
 	once      sync.Once
 }
@@ -63,7 +92,6 @@ func NewClient(config Config) (*Client, error) {
 func (c *Client) init() error {
 	var err error
 	c.once.Do(func() {
-		// 首先初始化Elasticsearch
 		err = c.initElasticsearch()
 		if err != nil {
 			return
@@ -78,9 +106,7 @@ func (c *Client) init() error {
 	return err
 }
 
-// 添加Elasticsearch初始化函数
 func (c *Client) initElasticsearch() error {
-	// 设置环境变量（如果配置中有值）
 	if c.config.ElasticsearchAddr != "" {
 		os.Setenv("ELASTICSEARCH_ADDR", c.config.ElasticsearchAddr)
 	}
@@ -94,7 +120,6 @@ func (c *Client) initElasticsearch() error {
 		os.Setenv("ELASTICSEARCH_INDEX_NAME", c.config.ElasticsearchIndex)
 	}
 
-	// 初始化Elasticsearch客户端
 	err := espkg.Init()
 	if err != nil {
 		return fmt.Errorf("failed to initialize Elasticsearch: %w", err)
@@ -104,7 +129,6 @@ func (c *Client) initElasticsearch() error {
 }
 
 func (c *Client) initCallback() error {
-	// 创建日志目录
 	logDir := c.config.LogDir
 	if logDir == "" {
 		logDir = "log"
@@ -114,14 +138,12 @@ func (c *Client) initCallback() error {
 		return fmt.Errorf("failed to create log directory: %w", err)
 	}
 
-	// 打开日志文件
 	logFile := fmt.Sprintf("%s/eino.log", logDir)
 	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		return fmt.Errorf("failed to open log file: %w", err)
 	}
 
-	// 创建回调配置
 	cbConfig := &LogCallbackConfig{
 		Detail: true,
 		Writer: f,
@@ -135,7 +157,6 @@ func (c *Client) initCallback() error {
 func (c *Client) initGlobalCallbacks() error {
 	callbackHandlers := make([]callbacks.Handler, 0)
 
-	// APMPlus 回调
 	if c.config.ApmplusAppKey != "" {
 		region := c.config.ApmplusRegion
 		if region == "" {
@@ -145,7 +166,7 @@ func (c *Client) initGlobalCallbacks() error {
 		cbh, _, err := apmplus.NewApmplusHandler(&apmplus.Config{
 			Host:        fmt.Sprintf("apmplus-%s.volces.com:4317", region),
 			AppKey:      c.config.ApmplusAppKey,
-			ServiceName: "ai-agent-elasticsearch", // 更新服务名
+			ServiceName: "ai-agent-elasticsearch",
 			Release:     "release/v1.0.0",
 		})
 		if err != nil {
@@ -154,7 +175,6 @@ func (c *Client) initGlobalCallbacks() error {
 		callbackHandlers = append(callbackHandlers, cbh)
 	}
 
-	// Langfuse 回调
 	if c.config.LangfusePublicKey != "" && c.config.LangfuseSecretKey != "" {
 		cbh, _ := langfuse.NewLangfuseHandler(&langfuse.Config{
 			Host:      "https://cloud.langfuse.com",
@@ -176,43 +196,45 @@ func (c *Client) initGlobalCallbacks() error {
 	return nil
 }
 
-// Stream 提供流式对话功能
-func (c *Client) Stream(ctx context.Context, conversationID, message string) (*schema.StreamReader[*schema.Message], error) {
-	// 构建 agent
+// StreamWithToolEvents 提供带工具事件的流式对话功能
+func (c *Client) StreamWithToolEvents(ctx context.Context, conversationID, message string) (*StreamReaderWithToolEvents, error) {
 	runner, err := einoagent.BuildEinoAgent(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build agent graph: %w", err)
 	}
 
-	// 获取对话历史
 	conversation := c.memory.GetConversation(conversationID, true)
 
-	// 创建用户消息
 	userMessage := &einoagent.UserMessage{
 		ID:      conversationID,
 		Query:   message,
 		History: conversation.GetMessages(),
 	}
 
-	// 创建工具回调处理器来捕获工具调用和返回
-	toolCallCapture := createToolCallbackHandler(conversation)
+	// 创建工具事件通道
+	toolEvents := make(chan ToolEvent, 10)
+	streamCtx, cancel := context.WithCancel(ctx)
+
+	// 创建工具回调处理器
+	toolCallCapture := createToolCallbackHandlerWithEvents(conversation, toolEvents, conversationID)
 
 	// 流式执行
 	sr, err := runner.Stream(ctx, userMessage, compose.WithCallbacks(c.cbHandler, toolCallCapture))
 	if err != nil {
+		cancel()
+		close(toolEvents)
 		return nil, fmt.Errorf("failed to stream: %w", err)
 	}
 
 	srs := sr.Copy(2)
 
 	go func() {
-		// 保存到内存
 		fullMsgs := make([]*schema.Message, 0)
 
 		defer func() {
 			srs[1].Close()
+			cancel()
 
-			// 添加用户输入到历史
 			conversation.Append(schema.UserMessage(message))
 
 			fullMsg, err := schema.ConcatMessages(fullMsgs)
@@ -235,40 +257,119 @@ func (c *Client) Stream(ctx context.Context, conversationID, message string) (*s
 		}
 	}()
 
-	return srs[0], nil
+	return &StreamReaderWithToolEvents{
+		reader:     srs[0],
+		toolEvents: toolEvents,
+		ctx:        streamCtx,
+		cancel:     cancel,
+	}, nil
 }
 
-// createToolCallbackHandler 创建工具回调处理器（基于官方示例）
-func createToolCallbackHandler(conversation *mem.Conversation) callbacks.Handler {
-	fmt.Printf("222222222222222")
+// Stream 保持向后兼容性
+func (c *Client) Stream(ctx context.Context, conversationID, message string) (*schema.StreamReader[*schema.Message], error) {
+	wrapper, err := c.StreamWithToolEvents(ctx, conversationID, message)
+	if err != nil {
+		return nil, err
+	}
+
+	// 启动goroutine来消费工具事件，避免阻塞
+	go func() {
+		for range wrapper.ToolEvents() {
+			// 消费但不处理，保持向后兼容
+		}
+	}()
+
+	return wrapper.reader, nil
+}
+
+// createToolCallbackHandlerWithEvents 创建带事件发送的工具回调处理器
+func createToolCallbackHandlerWithEvents(conversation *mem.Conversation, toolEvents chan ToolEvent, recordId string) callbacks.Handler {
 	return callbacks.NewHandlerBuilder().
 		OnStartFn(func(ctx context.Context, info *callbacks.RunInfo, input callbacks.CallbackInput) context.Context {
-			// 捕获工具调用的开始
-			fmt.Printf("333333333333333333:%v", info)
-			if info.Type == "TaskManager" {
+			// 判断是否是工具调用（检查组件类型）
+			if isToolCall(info) {
 				fmt.Printf("=== Tool Call Started ===\n")
-				fmt.Printf("Tool Name: %s\n", info.Name)
+				fmt.Printf("Tool Name: %s, Type: %s, Component: %s\n", info.Name, info.Type, info.Component)
 				fmt.Printf("Tool Input: %+v\n", input)
 
-				// 保存工具调用信息
+				// 生成唯一的工具调用ID
+				toolCallId := fmt.Sprintf("call_%s_%d", info.Name, time.Now().UnixNano())
+
+				// 将工具调用ID存储到context中，供OnEnd使用
+				ctx = context.WithValue(ctx, "toolCallId", toolCallId)
+
+				// 构造工具调用事件
+				toolCallEvent := types.StreamEvent{
+					Type:     "tool-call",
+					RecordId: recordId,
+					Role:     "assistant",
+					ToolCall: &types.ToolCall{
+						Id:   toolCallId,
+						Type: "function",
+						Function: types.ToolCallFunction{
+							Name:      info.Name,
+							Arguments: convertInputToMap(input),
+						},
+					},
+				}
+
+				// 立即发送工具调用事件
+				select {
+				case toolEvents <- ToolEvent{
+					Type:     "tool-call",
+					Event:    toolCallEvent,
+					RecordId: recordId,
+				}:
+					fmt.Printf("Sent tool-call event: %s\n", toolCallId)
+				default:
+					fmt.Printf("Tool events channel is full, skipping tool-call event\n")
+				}
+
+				// 保存工具调用信息到对话历史
 				inputStr, _ := json.Marshal(input)
 				toolCallMsg := &schema.Message{
 					Role:    schema.Assistant,
 					Content: fmt.Sprintf("调用工具: %s，参数: %s", info.Name, string(inputStr)),
 				}
 				conversation.Append(toolCallMsg)
-				fmt.Printf("Saved tool call message\n")
 			}
 			return ctx
 		}).
 		OnEndFn(func(ctx context.Context, info *callbacks.RunInfo, output callbacks.CallbackOutput) context.Context {
-			// 捕获工具调用的结束
-			if info.Type == "TaskManager" {
+			// 判断是否是工具调用完成
+			if isToolCall(info) {
 				fmt.Printf("=== Tool Call Ended ===\n")
-				fmt.Printf("Tool Name: %s\n", info.Name)
+				fmt.Printf("Tool Name: %s, Type: %s, Component: %s\n", info.Name, info.Type, info.Component)
 				fmt.Printf("Tool Output: %+v\n", output)
 
-				// 构造工具返回消息
+				// 从context中获取工具调用ID
+				toolCallId, ok := ctx.Value("toolCallId").(string)
+				if !ok {
+					toolCallId = fmt.Sprintf("call_%s_%d", info.Name, time.Now().UnixNano())
+				}
+
+				// 构造工具调用结果事件，添加callResult字段
+				toolResultEvent := types.StreamEvent{
+					Type:       "tool-result",
+					RecordId:   recordId,
+					Role:       "assistant",
+					ToolCallId: toolCallId,
+					Result:     convertOutputToMap(output),
+				}
+
+				// 立即发送工具调用结果事件
+				select {
+				case toolEvents <- ToolEvent{
+					Type:     "tool-result",
+					Event:    toolResultEvent,
+					RecordId: recordId,
+				}:
+					fmt.Printf("Sent tool-result event: %s\n", toolCallId)
+				default:
+					fmt.Printf("Tool events channel is full, skipping tool-result event\n")
+				}
+
+				// 保存工具返回结果到对话历史
 				var outputStr string
 				if outputBytes, err := json.Marshal(output); err == nil {
 					outputStr = string(outputBytes)
@@ -286,9 +387,84 @@ func createToolCallbackHandler(conversation *mem.Conversation) callbacks.Handler
 			return ctx
 		}).
 		OnErrorFn(func(ctx context.Context, info *callbacks.RunInfo, err error) context.Context {
-			fmt.Printf("=== Tool Call Error ===\n")
-			fmt.Printf("Tool Name: %s, Error: %v\n", info.Name, err)
+			if isToolCall(info) {
+				fmt.Printf("=== Tool Call Error ===\n")
+				fmt.Printf("Tool Name: %s, Error: %v\n", info.Name, err)
+			}
 			return ctx
 		}).
 		Build()
+}
+
+// isToolCall 判断是否是工具调用
+func isToolCall(info *callbacks.RunInfo) bool {
+	// 根据你的工具类型进行判断
+	toolTypes := map[string]bool{
+		"TaskManager":   true,
+		"task_manager":  true,
+		"OpenFileTool":  true,
+		"open":          true,
+		"GitCloneFile":  true,
+		"gitclone":      true,
+		"EinoAssistant": true,
+		"eino_tool":     true,
+		"DuckDuckGo":    true,
+		"duckduckgo":    true,
+	}
+
+	// 检查组件名称或类型，需要转换为字符串
+	componentStr := string(info.Component)
+	typeStr := string(info.Type)
+
+	return toolTypes[componentStr] || toolTypes[typeStr] || toolTypes[info.Name]
+}
+
+// convertInputToMap 将输入转换为map
+func convertInputToMap(input callbacks.CallbackInput) map[string]interface{} {
+	if input == nil {
+		return map[string]interface{}{}
+	}
+
+	// 尝试直接转换
+	if inputMap, ok := input.(map[string]interface{}); ok {
+		return inputMap
+	}
+
+	// 通过JSON序列化/反序列化转换
+	inputBytes, err := json.Marshal(input)
+	if err != nil {
+		return map[string]interface{}{"raw": fmt.Sprintf("%v", input)}
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(inputBytes, &result); err != nil {
+		return map[string]interface{}{"raw": string(inputBytes)}
+	}
+
+	return result
+}
+
+// convertOutputToMap 将输出转换为map
+func convertOutputToMap(output callbacks.CallbackOutput) map[string]interface{} {
+	if output == nil {
+		return map[string]interface{}{}
+	}
+
+	// 尝试直接转换
+	if outputMap, ok := output.(map[string]interface{}); ok {
+		return outputMap
+	}
+
+	// 通过JSON序列化/反序列化转换
+	outputBytes, err := json.Marshal(output)
+	if err != nil {
+		return map[string]interface{}{"raw": fmt.Sprintf("%v", output)}
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(outputBytes, &result); err != nil {
+		return map[string]interface{}{"raw": string(outputBytes)}
+	}
+
+	return result
 }

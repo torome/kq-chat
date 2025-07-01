@@ -153,6 +153,7 @@ type StreamEvent struct {
 	ToolCall         *ToolCall              `json:"tool_call,omitempty"`
 	ToolCallId       string                 `json:"toolCallId,omitempty"`
 	Result           map[string]interface{} `json:"result,omitempty"`
+	CallResult       bool                   `json:"callResult,omitempty"` // 新增：标识工具调用是否完成
 }
 
 type TextToSpeechReq struct {
