@@ -19,3 +19,9 @@ ThinkingEnabled: false
 KnowledgeEnabled: true
 KnowledgeScoreThreshold: 0.7
 KnowledgeMaxResults: 5
+
+MCP:
+  Enabled: true
+  ServerURL: "http://localhost:8080/sse"
+  ClientName: "kq-chat-agent"
+  ClientVersion: "1.0.0"

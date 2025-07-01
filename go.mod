@@ -18,6 +18,7 @@ require (
 	github.com/cloudwego/eino-ext/components/retriever/es8 v0.0.0-20250626134119-cf4f96ea0039
 	github.com/cloudwego/eino-ext/components/retriever/redis v0.0.0-20250626134119-cf4f96ea0039
 	github.com/cloudwego/eino-ext/components/tool/duckduckgo v0.0.0-20250626134119-cf4f96ea0039
+	github.com/cloudwego/eino-ext/components/tool/mcp v0.0.3
 	github.com/cloudwego/hertz v0.10.0
 	github.com/elastic/go-elasticsearch/v8 v8.18.1
 	github.com/go-resty/resty/v2 v2.16.5
@@ -27,6 +28,7 @@ require (
 	github.com/hertz-contrib/sse v0.1.0
 	github.com/joho/godotenv v1.5.1
 	github.com/json-iterator/go v1.1.12
+	github.com/mark3labs/mcp-go v0.32.0
 	github.com/pkg/errors v0.9.1
 	github.com/redis/go-redis/v9 v9.10.0
 	github.com/shopspring/decimal v1.4.0
@@ -95,11 +97,13 @@ require (
 	github.com/slongfield/pyfmt v0.0.0-20220222012616-ea85ff4c361f // indirect
 	github.com/smarty/assertions v1.16.0 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
+	github.com/spf13/cast v1.7.1 // indirect
 	github.com/tidwall/gjson v1.14.4 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/yargevad/filepathx v1.0.0 // indirect
+	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.59.0 // indirect
 	go.opentelemetry.io/otel v1.34.0 // indirect

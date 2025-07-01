@@ -17,50 +17,69 @@
 package einoagent
 
 import (
-	"context"
-
 	"ai-agent/core/tool/einotool"
 	"ai-agent/core/tool/gitclone"
+	"ai-agent/core/tool/mcp"
 	"ai-agent/core/tool/open"
 	"ai-agent/core/tool/task"
+	"context"
+	"fmt"
 	"github.com/cloudwego/eino-ext/components/tool/duckduckgo"
 	"github.com/cloudwego/eino/components/tool"
 )
 
+var mcpManager *mcp.Manager
+
+func init() {
+	// 初始化 MCP 管理器，默认连接到本地 MCP 服务器
+	mcpManager = mcp.NewManager("http://localhost:8080/sse")
+}
+
 func GetTools(ctx context.Context) ([]tool.BaseTool, error) {
-	/*
-		einoAssistantTool, err := NewEinoAssistantTool(ctx)
-		if err != nil {
-			return nil, err
-		}
-	*/
-	toolTask, err := NewTaskTool(ctx)
-	if err != nil {
-		return nil, err
+	var allTools []tool.BaseTool
+
+	// 初始化基础工具
+	if einoAssistantTool, err := NewEinoAssistantTool(ctx); err == nil {
+		allTools = append(allTools, einoAssistantTool)
+	} else {
+		fmt.Printf("Warning: Failed to load EinoAssistantTool: %v", err)
 	}
-	/*
-		toolOpen, err := NewOpenFileTool(ctx)
-		if err != nil {
-			return nil, err
-		}
 
-		toolGitClone, err := NewGitCloneFile(ctx)
-		if err != nil {
-			return nil, err
-		}
+	if toolTask, err := NewTaskTool(ctx); err == nil {
+		allTools = append(allTools, toolTask)
+	} else {
+		fmt.Printf("Warning: Failed to load TaskTool: %v", err)
+	}
 
-		toolDDGSearch, err := NewDDGSearch(ctx, nil)
-		if err != nil {
-			return nil, err
-		}
-	*/
-	return []tool.BaseTool{
-		//einoAssistantTool,
-		toolTask,
-		//toolOpen,
-		//toolGitClone,
-		//toolDDGSearch,
-	}, nil
+	if toolOpen, err := NewOpenFileTool(ctx); err == nil {
+		allTools = append(allTools, toolOpen)
+	} else {
+		fmt.Printf("Warning: Failed to load OpenFileTool: %v", err)
+	}
+
+	if toolGitClone, err := NewGitCloneFile(ctx); err == nil {
+		allTools = append(allTools, toolGitClone)
+	} else {
+		fmt.Printf("Warning: Failed to load GitCloneTool: %v", err)
+	}
+
+	if toolDDGSearch, err := NewDDGSearch(ctx, nil); err == nil {
+		allTools = append(allTools, toolDDGSearch)
+	} else {
+		fmt.Printf("Warning: Failed to load DDGSearchTool: %v", err)
+	}
+
+	// 尝试获取 MCP 工具
+	mcpTools, err := GetMCPTools(ctx)
+	if err != nil {
+		fmt.Printf("Failed to get MCP tools: %v", err)
+	} else {
+		allTools = append(allTools, mcpTools...)
+		fmt.Printf("Successfully loaded %d MCP tools", len(mcpTools))
+	}
+
+	fmt.Printf("Total tools loaded: %d", len(allTools))
+	return allTools, nil
 }
 
 func defaultDDGSearchConfig(ctx context.Context) (*duckduckgo.Config, error) {
@@ -96,4 +115,19 @@ func NewEinoAssistantTool(ctx context.Context) (tn tool.BaseTool, err error) {
 
 func NewTaskTool(ctx context.Context) (tn tool.BaseTool, err error) {
 	return task.NewTaskTool(ctx, nil)
+}
+
+// GetMCPTools 获取 MCP 工具
+func GetMCPTools(ctx context.Context) ([]tool.BaseTool, error) {
+	if mcpManager == nil {
+		return nil, fmt.Errorf("MCP manager not initialized")
+	}
+
+	// 检查 MCP 服务器是否健康
+	if !mcpManager.IsHealthy(ctx) {
+		fmt.Printf("MCP server is not healthy, trying to reconnect...")
+		// 可以在这里添加重连逻辑
+	}
+
+	return mcpManager.GetTools(ctx)
 }
