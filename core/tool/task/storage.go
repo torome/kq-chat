@@ -17,35 +17,86 @@
 package task
 
 import (
-	"bufio"
-	"encoding/json"
+	"context"
+	"database/sql"
+	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
-	"sync"
 	"time"
+
+	"github.com/Masterminds/squirrel"
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/zeromicro/go-zero/core/stores/sqlx"
 )
 
 var defaultStorage *Storage
 
 type Storage struct {
-	filePath string
-	mu       sync.RWMutex
-	cache    map[string]*Task
-	dirty    bool
+	conn sqlx.SqlConn
+}
+
+// TaskModel - 对应数据库表结构
+type TaskModel struct {
+	Id        string         `db:"id"`
+	Title     string         `db:"title"`
+	Content   sql.NullString `db:"content"`
+	Completed bool           `db:"completed"`
+	Deadline  sql.NullString `db:"deadline"`
+	IsDeleted bool           `db:"is_deleted"`
+	CreatedAt time.Time      `db:"created_at"`
+	UpdatedAt time.Time      `db:"updated_at"`
+}
+
+// 转换方法：数据库模型 -> 业务模型
+func (tm *TaskModel) ToTask() *Task {
+	task := &Task{
+		ID:        tm.Id,
+		Title:     tm.Title,
+		Completed: tm.Completed,
+		IsDeleted: tm.IsDeleted,
+		CreatedAt: tm.CreatedAt.Format(time.RFC3339),
+	}
+
+	if tm.Content.Valid {
+		task.Content = tm.Content.String
+	}
+
+	if tm.Deadline.Valid {
+		task.Deadline = tm.Deadline.String
+	}
+
+	return task
+}
+
+// 转换方法：业务模型 -> 数据库模型
+func (t *Task) ToTaskModel() *TaskModel {
+	tm := &TaskModel{
+		Id:        t.ID,
+		Title:     t.Title,
+		Completed: t.Completed,
+		IsDeleted: t.IsDeleted,
+	}
+
+	if t.Content != "" {
+		tm.Content = sql.NullString{String: t.Content, Valid: true}
+	}
+
+	if t.Deadline != "" {
+		tm.Deadline = sql.NullString{String: t.Deadline, Valid: true}
+	}
+
+	return tm
 }
 
 func GetDefaultStorage() *Storage {
 	if defaultStorage == nil {
-		InitDefaultStorage("./data/task")
+		panic("storage not initialized, call InitDefaultStorage first")
 	}
 	return defaultStorage
 }
 
-func InitDefaultStorage(dataDir string) error {
-	s, err := NewStorage(dataDir)
+// 修改：接受数据库连接字符串而不是目录路径
+func InitDefaultStorage(dataSource string) error {
+	s, err := NewStorage(dataSource)
 	if err != nil {
 		return err
 	}
@@ -53,228 +104,253 @@ func InitDefaultStorage(dataDir string) error {
 	return nil
 }
 
-func NewStorage(dataDir string) (*Storage, error) {
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create data directory: %v", err)
-	}
+func NewStorage(dataSource string) (*Storage, error) {
+	sqlConn := sqlx.NewMysql(dataSource)
 	s := &Storage{
-		filePath: filepath.Join(dataDir, "tasks.jsonl"),
-		cache:    make(map[string]*Task),
+		conn: sqlConn,
 	}
 
-	if err := s.loadFromDisk(); err != nil {
-		return nil, fmt.Errorf("failed to load from disk: %v", err)
+	// 测试连接
+
+	// 初始化数据库表
+	if err := s.initTables(); err != nil {
+		return nil, fmt.Errorf("failed to init tables: %v", err)
 	}
 
 	return s, nil
 }
 
-func (s *Storage) loadFromDisk() error {
-	file, err := os.OpenFile(s.filePath, os.O_CREATE|os.O_RDONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to open file: %v", err)
-	}
-	defer file.Close()
+// 初始化数据库表
+func (s *Storage) initTables() error {
+	createTableSQL := `
+	CREATE TABLE IF NOT EXISTS tasks (
+		id VARCHAR(36) PRIMARY KEY,
+		title VARCHAR(255) NOT NULL,
+		content TEXT,
+		completed BOOLEAN DEFAULT FALSE,
+		deadline VARCHAR(50),
+		is_deleted BOOLEAN DEFAULT FALSE,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		KEY idx_created_at (created_at),
+		KEY idx_completed (completed),
+		KEY idx_is_deleted (is_deleted)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+	`
 
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		var task Task
-		if err := json.Unmarshal(scanner.Bytes(), &task); err != nil {
-			return fmt.Errorf("failed to unmarshal task: %v", err)
-		}
-		s.cache[task.ID] = &task
-	}
-
-	return scanner.Err()
+	_, err := s.conn.ExecCtx(context.Background(), createTableSQL)
+	return err
 }
 
 func (s *Storage) Add(task *Task) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// 使用 squirrel 构建 SQL
+	query, args, err := squirrel.Insert("tasks").
+		Columns("id", "user_id", "title", "content", "completed", "deadline", "is_deleted", "created_at", "updated_at").
+		Values(task.ID, task.UserId, task.Title, task.Content, task.Completed, task.Deadline, false, time.Now(), time.Now()).
+		PlaceholderFormat(squirrel.Question).
+		ToSql()
 
+	if err != nil {
+		return fmt.Errorf("failed to build insert query: %v", err)
+	}
+
+	_, err = s.conn.ExecCtx(context.Background(), query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to insert task: %v", err)
+	}
+
+	// 设置创建时间
 	task.CreatedAt = time.Now().Format(time.RFC3339)
 	task.IsDeleted = false
-	s.cache[task.ID] = task
 
-	// 直接追加到文件末尾
-	file, err := os.OpenFile(s.filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	return nil
+}
+
+func (s *Storage) Update(task *Task) error {
+	// 构建动态更新查询
+	updateBuilder := squirrel.Update("tasks").
+		Where(squirrel.Eq{"id": task.ID, "is_deleted": false, "user_id": task.UserId}).
+		Set("updated_at", time.Now()).
+		PlaceholderFormat(squirrel.Question)
+
+	// 只更新非空字段
+	if task.Title != "" {
+		updateBuilder = updateBuilder.Set("title", task.Title)
+	}
+	if task.Content != "" {
+		updateBuilder = updateBuilder.Set("content", task.Content)
+	}
+	if task.Deadline != "" {
+		updateBuilder = updateBuilder.Set("deadline", task.Deadline)
+	}
+	// completed 字段总是更新（包括 false 值）
+	updateBuilder = updateBuilder.Set("completed", task.Completed)
+
+	query, args, err := updateBuilder.ToSql()
 	if err != nil {
-		return fmt.Errorf("failed to open file: %v", err)
+		return fmt.Errorf("failed to build update query: %v", err)
 	}
-	defer file.Close()
 
-	data, err := json.Marshal(task)
+	result, err := s.conn.ExecCtx(context.Background(), query, args...)
 	if err != nil {
-		return fmt.Errorf("failed to marshal task: %v", err)
+		return fmt.Errorf("failed to update task: %v", err)
 	}
 
-	if _, err := file.Write(append(data, '\n')); err != nil {
-		return fmt.Errorf("failed to write task: %v", err)
+	// 检查是否有行被更新
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %v", err)
 	}
 
-	if err := file.Sync(); err != nil {
-		return fmt.Errorf("failed to sync file: %v", err)
+	if rowsAffected == 0 {
+		return fmt.Errorf("task not found: %s", task.ID)
+	}
+
+	return nil
+}
+
+func (s *Storage) Delete(task *Task) error {
+	// 软删除
+	query, args, err := squirrel.Update("tasks").
+		Set("is_deleted", true).
+		Set("updated_at", time.Now()).
+		Where(squirrel.Eq{"id": task.ID, "is_deleted": false, "user_id": task.UserId}).
+		PlaceholderFormat(squirrel.Question).
+		ToSql()
+
+	if err != nil {
+		return fmt.Errorf("failed to build delete query: %v", err)
+	}
+
+	result, err := s.conn.ExecCtx(context.Background(), query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to delete task: %v", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %v", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("task not found: %s", task.ID)
 	}
 
 	return nil
 }
 
 func (s *Storage) List(params *ListParams) ([]*Task, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	// 使用 squirrel 构建复杂查询
+	queryBuilder := squirrel.Select("id", "title", "content", "completed", "deadline", "is_deleted", "created_at", "updated_at").
+		From("tasks").
+		Where(squirrel.Eq{"is_deleted": false}).
+		PlaceholderFormat(squirrel.Question)
 
-	var activeTasks, completedTasks []*Task
-	for _, task := range s.cache {
-		if task.IsDeleted {
-			continue
-		}
-
-		if params.Query != "" && !contains(task.Title, params.Query) && !contains(task.Content, params.Query) {
-			continue
-		}
-
-		if params.IsDone != nil {
-			if task.Completed != *params.IsDone {
-				continue
-			}
-		}
-
-		if task.Completed {
-			completedTasks = append(completedTasks, task)
-		} else {
-			activeTasks = append(activeTasks, task)
-		}
+	// 添加搜索条件
+	if params.Query != "" {
+		searchTerm := "%" + params.Query + "%"
+		queryBuilder = queryBuilder.Where(
+			squirrel.Or{
+				squirrel.Like{"title": searchTerm},
+				squirrel.Like{"content": searchTerm},
+			},
+		)
 	}
 
-	// 按创建时间排序（最新的在前面）
-	sort.Slice(activeTasks, func(i, j int) bool {
-		return activeTasks[i].CreatedAt > activeTasks[j].CreatedAt
-	})
-	sort.Slice(completedTasks, func(i, j int) bool {
-		return completedTasks[i].CreatedAt > completedTasks[j].CreatedAt
-	})
+	// 添加完成状态过滤
+	if params.IsDone != nil {
+		queryBuilder = queryBuilder.Where(squirrel.Eq{"completed": *params.IsDone})
+	}
 
-	// 合并列表：未完成的在前，已完成的在后
-	tasks := append(activeTasks, completedTasks...)
+	if params.UserId != nil {
+		queryBuilder = queryBuilder.Where(squirrel.Eq{"user_id": *params.UserId})
+	}
 
-	if params.Limit != nil && len(tasks) > *params.Limit {
-		tasks = tasks[:*params.Limit]
+	// 排序：未完成的在前，按创建时间倒序
+	queryBuilder = queryBuilder.OrderBy("completed ASC", "created_at DESC")
+
+	// 添加限制
+	if params.Limit != nil && *params.Limit > 0 {
+		queryBuilder = queryBuilder.Limit(uint64(*params.Limit))
+	}
+
+	query, args, err := queryBuilder.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build select query: %v", err)
+	}
+
+	var taskModels []TaskModel
+	err = s.conn.QueryRowsCtx(context.Background(), &taskModels, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query tasks: %v", err)
+	}
+
+	// 转换为业务模型
+	tasks := make([]*Task, 0, len(taskModels))
+	for _, tm := range taskModels {
+		tasks = append(tasks, tm.ToTask())
 	}
 
 	return tasks, nil
 }
 
-func (s *Storage) Update(task *Task) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// GetByID 根据 ID 获取单个任务
+func (s *Storage) GetByID(id string) (*Task, error) {
+	query, args, err := squirrel.Select("id", "title", "content", "completed", "deadline", "is_deleted", "created_at", "updated_at").
+		From("tasks").
+		Where(squirrel.Eq{"id": id, "is_deleted": false}).
+		PlaceholderFormat(squirrel.Question).
+		ToSql()
 
-	existing, exists := s.cache[task.ID]
-	if !exists || existing.IsDeleted {
-		return fmt.Errorf("task not found: %s", task.ID)
-	}
-
-	// 只更新非空字段
-	updated := *existing // 创建副本
-	if task.Title != "" {
-		updated.Title = task.Title
-	}
-	if task.Content != "" {
-		updated.Content = task.Content
-	}
-	if task.Deadline != "" {
-		updated.Deadline = task.Deadline
-	}
-	// Completed 字段需要特殊处理，因为它是布尔值
-	if task.Completed != existing.Completed {
-		updated.Completed = task.Completed
-	}
-
-	s.cache[task.ID] = &updated
-	s.dirty = true
-
-	return s.syncToDisk()
-}
-
-func (s *Storage) Delete(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	task, exists := s.cache[id]
-	if !exists || task.IsDeleted {
-		return fmt.Errorf("task not found: %s", id)
-	}
-
-	// 标记删除
-	task.IsDeleted = true
-	s.dirty = true
-
-	return s.syncToDisk()
-}
-
-func (s *Storage) syncToDisk() error {
-	if !s.dirty {
-		return nil
-	}
-
-	// 创建临时文件
-	tmpFile := s.filePath + ".tmp"
-	file, err := os.Create(tmpFile)
 	if err != nil {
-		return fmt.Errorf("failed to create temp file: %v", err)
+		return nil, fmt.Errorf("failed to build select query: %v", err)
 	}
-	defer file.Close()
 
-	// 写入数据到临时文件
-	for _, task := range s.cache {
-		data, err := json.Marshal(task)
-		if err != nil {
-			os.Remove(tmpFile) // 清理临时文件
-			return fmt.Errorf("failed to marshal task: %v", err)
+	var taskModel TaskModel
+	err = s.conn.QueryRowCtx(context.Background(), &taskModel, query, args...)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("task not found: %s", id)
 		}
-
-		if _, err := file.Write(append(data, '\n')); err != nil {
-			os.Remove(tmpFile) // 清理临时文件
-			return fmt.Errorf("failed to write task: %v", err)
-		}
+		return nil, fmt.Errorf("failed to query task: %v", err)
 	}
 
-	// 确保所有数据都写入磁盘
-	if err := file.Sync(); err != nil {
-		os.Remove(tmpFile)
-		return fmt.Errorf("failed to sync file: %v", err)
-	}
-
-	// 关闭文件
-	if err := file.Close(); err != nil {
-		os.Remove(tmpFile)
-		return fmt.Errorf("failed to close file: %v", err)
-	}
-
-	// 备份现有文件（如果存在）
-	if _, err := os.Stat(s.filePath); err == nil {
-		backupFile := s.filePath + ".bak"
-		if err := os.Rename(s.filePath, backupFile); err != nil {
-			os.Remove(tmpFile)
-			return fmt.Errorf("failed to backup file: %v", err)
-		}
-	}
-
-	// 将临时文件重命名为正式文件
-	if err := os.Rename(tmpFile, s.filePath); err != nil {
-		// 如果重命名失败，尝试恢复备份
-		if backupErr := os.Rename(s.filePath+".bak", s.filePath); backupErr != nil {
-			return fmt.Errorf("failed to rename temp file and restore backup: %v, backup error: %v", err, backupErr)
-		}
-		return fmt.Errorf("failed to rename temp file: %v", err)
-	}
-
-	// 删除备份文件
-	os.Remove(s.filePath + ".bak")
-
-	s.dirty = false
-	return nil
+	return taskModel.ToTask(), nil
 }
 
-func contains(s, substr string) bool {
-	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
+// Count 获取任务总数
+func (s *Storage) Count(params *ListParams) (int64, error) {
+	queryBuilder := squirrel.Select("COUNT(*)").
+		From("tasks").
+		Where(squirrel.Eq{"is_deleted": false}).
+		PlaceholderFormat(squirrel.Question)
+
+	// 添加搜索条件
+	if params.Query != "" {
+		searchTerm := "%" + params.Query + "%"
+		queryBuilder = queryBuilder.Where(
+			squirrel.Or{
+				squirrel.Like{"title": searchTerm},
+				squirrel.Like{"content": searchTerm},
+			},
+		)
+	}
+
+	// 添加完成状态过滤
+	if params.IsDone != nil {
+		queryBuilder = queryBuilder.Where(squirrel.Eq{"completed": *params.IsDone})
+	}
+
+	query, args, err := queryBuilder.ToSql()
+	if err != nil {
+		return 0, fmt.Errorf("failed to build count query: %v", err)
+	}
+
+	var count int64
+	err = s.conn.QueryRowCtx(context.Background(), &count, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count tasks: %v", err)
+	}
+
+	return count, nil
 }

@@ -17,8 +17,10 @@
 package task
 
 import (
+	"ai-agent/common/ctxdata"
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
@@ -37,6 +39,7 @@ const (
 
 type Task struct {
 	ID        string `json:"id" jsonschema:"description=id of the task"`
+	UserId    int64  `json:"user_id" jsonschema:"description=user id"`
 	Title     string `json:"title" jsonschema:"description=title of the task"`
 	Content   string `json:"content" jsonschema:"description=content of the task"`
 	Completed bool   `json:"completed" jsonschema:"description=completed status of the task"`
@@ -56,6 +59,7 @@ type ListParams struct {
 	Query  string `json:"query" jsonschema:"description=query to search"`
 	IsDone *bool  `json:"is_done" jsonschema:"description=filter by completed status"`
 	Limit  *int   `json:"limit" jsonschema:"description=limit the number of results"`
+	UserId *int64 `json:"user_id" jsonschema:"description=user id"`
 }
 
 type TaskResponse struct {
@@ -77,10 +81,29 @@ type TaskToolConfig struct {
 }
 
 func defaultTaskToolConfig(ctx context.Context) (*TaskToolConfig, error) {
+	// 从环境变量读取数据库配置
+	dataSource := os.Getenv("TASK_DATASOURCE")
+	if dataSource == "" {
+		// 默认数据库连接字符串
+		//dataSource = "p2:eT8FTFWjLTFE4Fxx@tcp(127.0.0.1:3306)/p2?charset=utf8mb4&parseTime=true&loc=Asia%2FShanghai"
+		dataSource = "root:@tcp(localhost:3306)/p2?charset=utf8mb4&parseTime=true&loc=Local"
+	}
+
+	// 初始化 MySQL 存储
+	storage, err := NewStorage(dataSource)
+	if err != nil {
+		return nil, fmt.Errorf("failed to init MySQL storage: %v", err)
+	}
+
 	config := &TaskToolConfig{
-		Storage: GetDefaultStorage(),
+		Storage: storage,
 	}
 	return config, nil
+}
+
+// 如果需要全局初始化（可选）
+func InitTaskStorage(dataSource string) error {
+	return InitDefaultStorage(dataSource)
 }
 
 func NewTaskToolImpl(ctx context.Context, config *TaskToolConfig) (*TaskToolImpl, error) {
@@ -145,9 +168,18 @@ func (t *TaskToolImpl) ToEinoTool() (tool.BaseTool, error) {
 	return utils.InferTool("task_manager", description, t.Invoke)
 }
 
-// 同时优化Invoke方法，在响应中提供更清晰的信息
+// Invoke 同时优化Invoke方法，在响应中提供更清晰的信息
 func (t *TaskToolImpl) Invoke(ctx context.Context, req *TaskRequest) (res *TaskResponse, err error) {
+	// 从 context 中获取用户ID，如果请求中没有提供的话
+
+	userId := ctxdata.GetUidFromCtx(ctx)
+	fmt.Printf("userId5: %d\n", userId)
+
 	res = &TaskResponse{}
+
+	if userId == 0 {
+		return nil, fmt.Errorf("userId is empty")
+	}
 
 	switch req.Action {
 	case ActionAdd:
@@ -161,6 +193,7 @@ func (t *TaskToolImpl) Invoke(ctx context.Context, req *TaskRequest) (res *TaskR
 			res.Error = "title is required"
 			return res, nil
 		}
+		req.Task.UserId = userId
 		req.Task.ID = uuid.New().String()
 		if err := t.config.Storage.Add(req.Task); err != nil {
 			res.Status = "error"
@@ -182,6 +215,7 @@ func (t *TaskToolImpl) Invoke(ctx context.Context, req *TaskRequest) (res *TaskR
 			res.Error = "id is required for update action"
 			return res, nil
 		}
+		req.Task.UserId = userId
 		if err := t.config.Storage.Update(req.Task); err != nil {
 			res.Status = "error"
 			res.Error = fmt.Sprintf("failed to update task: %v", err)
@@ -203,7 +237,8 @@ func (t *TaskToolImpl) Invoke(ctx context.Context, req *TaskRequest) (res *TaskR
 			res.Error = "task id is required for delete action"
 			return res, nil
 		}
-		if err := t.config.Storage.Delete(req.Task.ID); err != nil {
+		req.Task.UserId = userId
+		if err := t.config.Storage.Delete(req.Task); err != nil {
 			res.Status = "error"
 			res.Error = fmt.Sprintf("failed to delete task: %v", err)
 			return res, nil
@@ -214,6 +249,7 @@ func (t *TaskToolImpl) Invoke(ctx context.Context, req *TaskRequest) (res *TaskR
 		if req.List == nil {
 			req.List = &ListParams{}
 		}
+		req.List.UserId = &userId
 		tasks, err := t.config.Storage.List(req.List)
 		if err != nil {
 			res.Status = "error"
