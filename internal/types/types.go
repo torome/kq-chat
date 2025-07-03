@@ -3,6 +3,8 @@
 
 package types
 
+import "github.com/cloudwego/eino/schema"
+
 type BotInfo struct {
 	BotId                   string         `json:"botId"`
 	Name                    string         `json:"name"`
@@ -138,7 +140,7 @@ type SpeechToTextResp struct {
 }
 
 type StreamEvent struct {
-	Type             string                 `json:"type"` // search/thinking/text/tool-call/tool-result/knowledge/db/finish
+	Type             string                 `json:"type"`
 	Content          string                 `json:"content,omitempty"`
 	ReasoningContent string                 `json:"reasoning_content,omitempty"`
 	RecordId         string                 `json:"record_id,omitempty"`
@@ -150,10 +152,10 @@ type StreamEvent struct {
 	SearchResults    *SearchResults         `json:"search_results,omitempty"`
 	Error            *ErrorInfo             `json:"error,omitempty"`
 	Usage            *Usage                 `json:"usage,omitempty"`
-	ToolCall         *ToolCall              `json:"tool_call,omitempty"`
-	ToolCallId       string                 `json:"toolCallId,omitempty"`
+	ToolCall         *schema.ToolCall       `json:"tool_call,omitempty"`
+	ToolCallId       string                 `json:"tool_call_id,omitempty"` // 下划线格式
 	Result           map[string]interface{} `json:"result,omitempty"`
-	CallResult       bool                   `json:"callResult,omitempty"` // 新增：标识工具调用是否完成
+	CallResult       bool                   `json:"callResult,omitempty"`
 }
 
 type TextToSpeechReq struct {

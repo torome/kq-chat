@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -22,6 +23,8 @@ type WebsocketLogic struct {
 	ctx    context.Context
 	svcCtx *svc.ServiceContext
 	conn   *websocket.Conn
+	// 新增：保护WebSocket写入的互斥锁
+	writeMutex sync.Mutex
 }
 
 var upgrader = websocket.Upgrader{
@@ -85,7 +88,7 @@ func (l *WebsocketLogic) handleSendMessage(data interface{}) {
 	l.Infof("Handling sendMessage: %+v", sendData)
 
 	// 生成记录ID
-	recordId := fmt.Sprintf("record_%d", time.Now().UnixNano())
+	recordId := "test001" //fmt.Sprintf("record_%d", time.Now().UnixNano())
 
 	// 使用真实的 Agent 处理
 	l.handleAgentStreamResponseWithTools(sendData, recordId)
@@ -231,30 +234,44 @@ func (l *WebsocketLogic) handleToolEvents(toolEvents <-chan agent.ToolEvent) {
 	l.Info("Tool events channel closed")
 }
 
-// 发送单个事件
+// 发送单个事件 - 线程安全版本
 func (l *WebsocketLogic) sendEvent(event types.StreamEvent) {
+	l.writeMutex.Lock()
+	defer l.writeMutex.Unlock()
+
 	eventData := fmt.Sprintf("data: %s\n\n", l.marshalEvent(event))
 	if err := l.conn.WriteMessage(websocket.TextMessage, []byte(eventData)); err != nil {
 		l.Errorf("Write message failed: %v", err)
 	}
 }
 
-// 发送结束事件
+// 发送结束事件 - 线程安全版本
 func (l *WebsocketLogic) sendFinishEvent(recordId string) {
+	l.writeMutex.Lock()
+	defer l.writeMutex.Unlock()
+
 	finishEvent := types.StreamEvent{
 		Type:         "finish",
 		RecordId:     recordId,
 		Role:         "assistant",
 		FinishReason: "stop",
 	}
-	l.sendEvent(finishEvent)
 
-	// 发送结束标志
+	// 先发送finish事件
+	eventData := fmt.Sprintf("data: %s\n\n", l.marshalEvent(finishEvent))
+	if err := l.conn.WriteMessage(websocket.TextMessage, []byte(eventData)); err != nil {
+		l.Errorf("Write finish event failed: %v", err)
+		return
+	}
+
+	// 再发送结束标志
 	endData := "data: [DONE]\n\n"
-	l.conn.WriteMessage(websocket.TextMessage, []byte(endData))
+	if err := l.conn.WriteMessage(websocket.TextMessage, []byte(endData)); err != nil {
+		l.Errorf("Write end data failed: %v", err)
+	}
 }
 
-// 处理推荐问题（保持原有逻辑）
+// 处理推荐问题 - 线程安全版本
 func (l *WebsocketLogic) handleRecommendQuestions(data interface{}) {
 	dataBytes, _ := json.Marshal(data)
 	var recommendData types.GetRecommendQuestionsReq
@@ -262,12 +279,17 @@ func (l *WebsocketLogic) handleRecommendQuestions(data interface{}) {
 
 	l.Infof("Handling getRecommendQuestions: %+v", recommendData)
 
-	// 可以用 Agent 生成推荐问题，或保持原有逻辑
 	questions := l.generateRecommendQuestions(recommendData)
 
 	for _, question := range questions {
 		time.Sleep(100 * time.Millisecond)
-		if err := l.conn.WriteMessage(websocket.TextMessage, []byte(question+"\n")); err != nil {
+
+		// 使用互斥锁保护写入
+		l.writeMutex.Lock()
+		err := l.conn.WriteMessage(websocket.TextMessage, []byte(question+"\n"))
+		l.writeMutex.Unlock()
+
+		if err != nil {
 			l.Errorf("Write recommend question failed: %v", err)
 			return
 		}

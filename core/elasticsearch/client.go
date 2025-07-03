@@ -28,13 +28,14 @@ func Init() error {
 
 func initElasticsearchClient() error {
 	esAddr := os.Getenv("ELASTICSEARCH_ADDR")
+	fmt.Printf("esAddr:%s", esAddr)
 	if esAddr == "" {
-		esAddr = "http://49.235.180.215:9200"
+		esAddr = "http://127.0.0.1:9200"
 	}
 
 	esUsername := os.Getenv("ELASTICSEARCH_USERNAME")
 	esPassword := os.Getenv("ELASTICSEARCH_PASSWORD")
-
+	fmt.Printf("esUsername:%s", esUsername)
 	config := elasticsearch.Config{
 		Addresses: []string{esAddr},
 	}

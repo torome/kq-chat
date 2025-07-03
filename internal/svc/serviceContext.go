@@ -3,12 +3,17 @@ package svc
 import (
 	"ai-agent/internal/config"
 	"ai-agent/internal/svc/agent"
+	"ai-agent/model"
+	"github.com/zeromicro/go-zero/core/stores/sqlx"
 	"log"
 )
 
 type ServiceContext struct {
 	Config      config.Config
 	AgentClient *agent.Client
+
+	CircleModel model.CircleModel
+	TaskModel   model.TaskModel
 }
 
 func NewServiceContext(c config.Config) *ServiceContext {
@@ -32,5 +37,8 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	return &ServiceContext{
 		Config:      c,
 		AgentClient: agentClient,
+
+		CircleModel: model.NewCircleModel(sqlx.NewMysql(c.DB.DataSource), c.Cache),
+		TaskModel:   model.NewTaskModel(sqlx.NewMysql(c.DB.DataSource), c.Cache),
 	}
 }

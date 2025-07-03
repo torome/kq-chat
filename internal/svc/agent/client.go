@@ -2,24 +2,23 @@
 package agent
 
 import (
+	"ai-agent/internal/types"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
-	"sync"
-	"time"
-
 	"github.com/cloudwego/eino-ext/callbacks/apmplus"
 	"github.com/cloudwego/eino-ext/callbacks/langfuse"
 	"github.com/cloudwego/eino/callbacks"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
+	"io"
+	"os"
+	"sync"
+	"time"
 
 	"ai-agent/core/eino/einoagent"
 	espkg "ai-agent/core/elasticsearch"
 	"ai-agent/core/memory"
-	"ai-agent/internal/types"
 )
 
 type Config struct {
@@ -196,7 +195,26 @@ func (c *Client) initGlobalCallbacks() error {
 	return nil
 }
 
-// StreamWithToolEvents 提供带工具事件的流式对话功能
+// 额外的调试和验证函数
+func validateConversationMessages(messages []*schema.Message) error {
+	for i, msg := range messages {
+		if msg.Role == schema.Tool {
+			if msg.ToolCallID == "" {
+				return fmt.Errorf("message %d: tool message missing ToolCallID", i)
+			}
+		}
+		if msg.Role == schema.Assistant && len(msg.ToolCalls) > 0 {
+			for j, toolCall := range msg.ToolCalls {
+				if toolCall.ID == "" {
+					return fmt.Errorf("message %d, tool_call %d: missing ID", i, j)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// 在 StreamWithToolEvents 方法中添加验证
 func (c *Client) StreamWithToolEvents(ctx context.Context, conversationID, message string) (*StreamReaderWithToolEvents, error) {
 	runner, err := einoagent.BuildEinoAgent(ctx)
 	if err != nil {
@@ -205,10 +223,19 @@ func (c *Client) StreamWithToolEvents(ctx context.Context, conversationID, messa
 
 	conversation := c.memory.GetConversation(conversationID, true)
 
+	// 获取历史消息并验证格式
+	historyMessages := conversation.GetMessages()
+
+	// 添加消息格式验证（可选，用于调试）
+	if err := validateConversationMessages(historyMessages); err != nil {
+		fmt.Printf("Warning: conversation message validation failed: %v\n", err)
+		// 可以选择清理有问题的消息或继续执行
+	}
+
 	userMessage := &einoagent.UserMessage{
 		ID:      conversationID,
 		Query:   message,
-		History: conversation.GetMessages(),
+		History: historyMessages,
 	}
 
 	// 创建工具事件通道
@@ -265,6 +292,32 @@ func (c *Client) StreamWithToolEvents(ctx context.Context, conversationID, messa
 	}, nil
 }
 
+// 清理历史对话数据的辅助函数（可选）
+func (c *Client) CleanConversationHistory(conversationID string) error {
+	conversation := c.memory.GetConversation(conversationID, false)
+	if conversation == nil {
+		return nil
+	}
+
+	// 清理有问题的消息
+	messages := conversation.GetMessages()
+	cleanMessages := make([]*schema.Message, 0, len(messages))
+
+	for _, msg := range messages {
+		// 跳过格式有问题的工具消息
+		if msg.Role == schema.Tool && msg.ToolCallID == "" {
+			fmt.Printf("Skipping invalid tool message without ToolCallID\n")
+			continue
+		}
+		cleanMessages = append(cleanMessages, msg)
+	}
+
+	// 重置对话历史（这里需要根据你的内存实现来调整）
+	// conversation.SetMessages(cleanMessages)
+
+	return nil
+}
+
 // Stream 保持向后兼容性
 func (c *Client) Stream(ctx context.Context, conversationID, message string) (*schema.StreamReader[*schema.Message], error) {
 	wrapper, err := c.StreamWithToolEvents(ctx, conversationID, message)
@@ -285,8 +338,8 @@ func (c *Client) Stream(ctx context.Context, conversationID, message string) (*s
 // createToolCallbackHandlerWithEvents 创建带事件发送的工具回调处理器
 func createToolCallbackHandlerWithEvents(conversation *mem.Conversation, toolEvents chan ToolEvent, recordId string) callbacks.Handler {
 	return callbacks.NewHandlerBuilder().
+		// 在 OnStartFn 回调中，修复工具调用消息的保存
 		OnStartFn(func(ctx context.Context, info *callbacks.RunInfo, input callbacks.CallbackInput) context.Context {
-			// 判断是否是工具调用（检查组件类型）
 			if isToolCall(info) {
 				fmt.Printf("=== Tool Call Started ===\n")
 				fmt.Printf("Tool Name: %s, Type: %s, Component: %s\n", info.Name, info.Type, info.Component)
@@ -294,26 +347,30 @@ func createToolCallbackHandlerWithEvents(conversation *mem.Conversation, toolEve
 
 				// 生成唯一的工具调用ID
 				toolCallId := fmt.Sprintf("call_%s_%d", info.Name, time.Now().UnixNano())
-
-				// 将工具调用ID存储到context中，供OnEnd使用
 				ctx = context.WithValue(ctx, "toolCallId", toolCallId)
+
+				// 将输入参数转换为 JSON 字符串
+				inputStr, _ := json.Marshal(convertInputToMap(input))
+
+				// 直接使用 schema.ToolCall
+				schemaToolCall := &schema.ToolCall{
+					ID:   toolCallId,
+					Type: "function",
+					Function: schema.FunctionCall{ // 注意：值类型，不是指针
+						Name:      info.Name,
+						Arguments: string(inputStr),
+					},
+				}
 
 				// 构造工具调用事件
 				toolCallEvent := types.StreamEvent{
 					Type:     "tool-call",
 					RecordId: recordId,
 					Role:     "assistant",
-					ToolCall: &types.ToolCall{
-						Id:   toolCallId,
-						Type: "function",
-						Function: types.ToolCallFunction{
-							Name:      info.Name,
-							Arguments: convertInputToMap(input),
-						},
-					},
+					ToolCall: schemaToolCall, // 直接使用 schema.ToolCall
 				}
 
-				// 立即发送工具调用事件
+				// 发送工具调用事件
 				select {
 				case toolEvents <- ToolEvent{
 					Type:     "tool-call",
@@ -325,18 +382,20 @@ func createToolCallbackHandlerWithEvents(conversation *mem.Conversation, toolEve
 					fmt.Printf("Tool events channel is full, skipping tool-call event\n")
 				}
 
-				// 保存工具调用信息到对话历史
-				inputStr, _ := json.Marshal(input)
+				// 保存工具调用消息到对话历史
 				toolCallMsg := &schema.Message{
-					Role:    schema.Assistant,
-					Content: fmt.Sprintf("调用工具: %s，参数: %s", info.Name, string(inputStr)),
+					Role:      schema.Assistant,
+					Content:   "",                                 // 工具调用消息内容为空
+					ToolCalls: []schema.ToolCall{*schemaToolCall}, // 使用相同的 schema.ToolCall
 				}
 				conversation.Append(toolCallMsg)
+				fmt.Printf("Saved tool call message with ID: %s\n", toolCallId)
 			}
 			return ctx
 		}).
+
+		// 在 OnEndFn 回调中：
 		OnEndFn(func(ctx context.Context, info *callbacks.RunInfo, output callbacks.CallbackOutput) context.Context {
-			// 判断是否是工具调用完成
 			if isToolCall(info) {
 				fmt.Printf("=== Tool Call Ended ===\n")
 				fmt.Printf("Tool Name: %s, Type: %s, Component: %s\n", info.Name, info.Type, info.Component)
@@ -346,18 +405,19 @@ func createToolCallbackHandlerWithEvents(conversation *mem.Conversation, toolEve
 				toolCallId, ok := ctx.Value("toolCallId").(string)
 				if !ok {
 					toolCallId = fmt.Sprintf("call_%s_%d", info.Name, time.Now().UnixNano())
+					fmt.Printf("Warning: tool_call_id not found in context, generated new one: %s\n", toolCallId)
 				}
 
-				// 构造工具调用结果事件，添加callResult字段
+				// 构造工具调用结果事件
 				toolResultEvent := types.StreamEvent{
 					Type:       "tool-result",
 					RecordId:   recordId,
 					Role:       "assistant",
-					ToolCallId: toolCallId,
+					ToolCallId: toolCallId, // 这个字段现在是 tool_call_id 格式
 					Result:     convertOutputToMap(output),
 				}
 
-				// 立即发送工具调用结果事件
+				// 发送工具调用结果事件
 				select {
 				case toolEvents <- ToolEvent{
 					Type:     "tool-result",
@@ -369,7 +429,7 @@ func createToolCallbackHandlerWithEvents(conversation *mem.Conversation, toolEve
 					fmt.Printf("Tool events channel is full, skipping tool-result event\n")
 				}
 
-				// 保存工具返回结果到对话历史
+				// 关键修复：正确保存工具返回结果到对话历史
 				var outputStr string
 				if outputBytes, err := json.Marshal(output); err == nil {
 					outputStr = string(outputBytes)
@@ -377,12 +437,16 @@ func createToolCallbackHandlerWithEvents(conversation *mem.Conversation, toolEve
 					outputStr = fmt.Sprintf("%v", output)
 				}
 
+				// 使用正确的 ToolCallID 字段设置
 				toolResultMsg := &schema.Message{
-					Role:    schema.Tool,
-					Content: outputStr,
+					Role:       schema.Tool,
+					Content:    outputStr,
+					ToolCallID: toolCallId, // 关键修复：设置 ToolCallID 字段
+					ToolName:   info.Name,  // 可选：设置工具名称
 				}
+
 				conversation.Append(toolResultMsg)
-				fmt.Printf("Saved tool result message: %s\n", outputStr)
+				fmt.Printf("Saved tool result message with ToolCallID: %s\n", toolCallId)
 			}
 			return ctx
 		}).
@@ -400,16 +464,18 @@ func createToolCallbackHandlerWithEvents(conversation *mem.Conversation, toolEve
 func isToolCall(info *callbacks.RunInfo) bool {
 	// 根据你的工具类型进行判断
 	toolTypes := map[string]bool{
-		"TaskManager":   true,
-		"task_manager":  true,
-		"OpenFileTool":  true,
-		"open":          true,
-		"GitCloneFile":  true,
-		"gitclone":      true,
-		"EinoAssistant": true,
-		"eino_tool":     true,
-		"DuckDuckGo":    true,
-		"duckduckgo":    true,
+		"TaskManager":        true,
+		"task_manager":       true,
+		"OpenFileTool":       true,
+		"open":               true,
+		"GitCloneFile":       true,
+		"gitclone":           true,
+		"EinoAssistant":      true,
+		"eino_tool":          true,
+		"DuckDuckGo":         true,
+		"duckduckgo":         true,
+		"calculator":         true,
+		"vocabulary_manager": true,
 	}
 
 	// 检查组件名称或类型，需要转换为字符串

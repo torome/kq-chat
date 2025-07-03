@@ -210,6 +210,7 @@ func (s *Storage) Update(task *Task) error {
 }
 
 func (s *Storage) Delete(task *Task) error {
+	fmt.Printf("Deleting task: Title='%s', UserId=%d\n", task.Title, task.UserId)
 	// 软删除
 	query, args, err := squirrel.Update("tasks").
 		Set("is_deleted", true).

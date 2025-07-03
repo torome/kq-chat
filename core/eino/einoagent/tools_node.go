@@ -22,6 +22,7 @@ import (
 	"ai-agent/core/tool/mcp"
 	"ai-agent/core/tool/open"
 	"ai-agent/core/tool/task"
+	"ai-agent/core/tool/vocabulary"
 	"context"
 	"fmt"
 	"github.com/cloudwego/eino-ext/components/tool/duckduckgo"
@@ -49,6 +50,13 @@ func GetTools(ctx context.Context) ([]tool.BaseTool, error) {
 		allTools = append(allTools, toolTask)
 	} else {
 		fmt.Printf("Warning: Failed to load TaskTool: %v", err)
+	}
+
+	// 添加词汇工具
+	if vocabularyTool, err := NewVocabularyTool(ctx); err == nil {
+		allTools = append(allTools, vocabularyTool)
+	} else {
+		fmt.Printf("Warning: Failed to load VocabularyTool: %v", err)
 	}
 
 	if toolOpen, err := NewOpenFileTool(ctx); err == nil {
@@ -130,4 +138,8 @@ func GetMCPTools(ctx context.Context) ([]tool.BaseTool, error) {
 	}
 
 	return mcpManager.GetTools(ctx)
+}
+
+func NewVocabularyTool(ctx context.Context) (tn tool.BaseTool, err error) {
+	return vocabulary.NewVocabularyTool(ctx, nil)
 }

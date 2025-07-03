@@ -17,6 +17,7 @@
 package vocabulary
 
 import (
+	"ai-agent/common/ctxdata"
 	"context"
 	"fmt"
 	"os"
@@ -108,7 +109,7 @@ type VocabularyRequest struct {
 	Action Action `json:"action" jsonschema:"description=action to perform, enum:start_session,get_word,submit_answer,get_stats,add_word"`
 
 	// 通用参数
-	UserID int64 `json:"user_id" jsonschema:"description=user identifier"`
+	UserID int64 `json:"user_id,omitempty" jsonschema:"description=user identifier"`
 
 	// 获取单词相关
 	SessionType string `json:"session_type,omitempty" jsonschema:"description=session type: review or learn"`
@@ -222,11 +223,14 @@ func (v *VocabularyToolImpl) ToEinoTool() (tool.BaseTool, error) {
 func (v *VocabularyToolImpl) Invoke(ctx context.Context, req *VocabularyRequest) (*VocabularyResponse, error) {
 	resp := &VocabularyResponse{}
 
-	if req.UserID == 0 {
+	userID := ctxdata.GetUidFromCtx(ctx)
+	if userID == 0 {
 		resp.Status = "error"
 		resp.Error = "user_id is required"
 		return resp, nil
 	}
+
+	req.UserID = userID
 
 	switch req.Action {
 	case ActionStartSession:
