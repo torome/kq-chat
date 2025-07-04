@@ -214,84 +214,6 @@ func validateConversationMessages(messages []*schema.Message) error {
 	return nil
 }
 
-// 在 StreamWithToolEvents 方法中添加验证
-func (c *Client) StreamWithToolEvents(ctx context.Context, conversationID, message string) (*StreamReaderWithToolEvents, error) {
-	runner, err := einoagent.BuildEinoAgent(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build agent graph: %w", err)
-	}
-
-	conversation := c.memory.GetConversation(conversationID, true)
-
-	// 获取历史消息并验证格式
-	historyMessages := conversation.GetMessages()
-
-	// 添加消息格式验证（可选，用于调试）
-	if err := validateConversationMessages(historyMessages); err != nil {
-		fmt.Printf("Warning: conversation message validation failed: %v\n", err)
-		// 可以选择清理有问题的消息或继续执行
-	}
-
-	userMessage := &einoagent.UserMessage{
-		ID:      conversationID,
-		Query:   message,
-		History: historyMessages,
-	}
-
-	// 创建工具事件通道
-	toolEvents := make(chan ToolEvent, 10)
-	streamCtx, cancel := context.WithCancel(ctx)
-
-	// 创建工具回调处理器
-	toolCallCapture := createToolCallbackHandlerWithEvents(conversation, toolEvents, conversationID)
-
-	// 流式执行
-	sr, err := runner.Stream(ctx, userMessage, compose.WithCallbacks(c.cbHandler, toolCallCapture))
-	if err != nil {
-		cancel()
-		close(toolEvents)
-		return nil, fmt.Errorf("failed to stream: %w", err)
-	}
-
-	srs := sr.Copy(2)
-
-	go func() {
-		fullMsgs := make([]*schema.Message, 0)
-
-		defer func() {
-			srs[1].Close()
-			cancel()
-
-			conversation.Append(schema.UserMessage(message))
-
-			fullMsg, err := schema.ConcatMessages(fullMsgs)
-			if err != nil {
-				fmt.Printf("error concatenating messages: %v\n", err)
-				return
-			}
-			conversation.Append(fullMsg)
-		}()
-
-		for {
-			msg, err := srs[1].Recv()
-			if err != nil {
-				if err != io.EOF {
-					fmt.Printf("error receiving message: %v\n", err)
-				}
-				break
-			}
-			fullMsgs = append(fullMsgs, msg)
-		}
-	}()
-
-	return &StreamReaderWithToolEvents{
-		reader:     srs[0],
-		toolEvents: toolEvents,
-		ctx:        streamCtx,
-		cancel:     cancel,
-	}, nil
-}
-
 // 清理历史对话数据的辅助函数（可选）
 func (c *Client) CleanConversationHistory(conversationID string) error {
 	conversation := c.memory.GetConversation(conversationID, false)
@@ -337,8 +259,11 @@ func (c *Client) Stream(ctx context.Context, conversationID, message string) (*s
 
 // createToolCallbackHandlerWithEvents 创建带事件发送的工具回调处理器
 func createToolCallbackHandlerWithEvents(conversation *mem.Conversation, toolEvents chan ToolEvent, recordId string) callbacks.Handler {
+	// 用于追踪待处理的工具调用
+	var pendingToolCalls = make(map[string]*schema.ToolCall)
+	var pendingToolCallsLock sync.Mutex
+
 	return callbacks.NewHandlerBuilder().
-		// 在 OnStartFn 回调中，修复工具调用消息的保存
 		OnStartFn(func(ctx context.Context, info *callbacks.RunInfo, input callbacks.CallbackInput) context.Context {
 			if isToolCall(info) {
 				fmt.Printf("=== Tool Call Started ===\n")
@@ -352,22 +277,27 @@ func createToolCallbackHandlerWithEvents(conversation *mem.Conversation, toolEve
 				// 将输入参数转换为 JSON 字符串
 				inputStr, _ := json.Marshal(convertInputToMap(input))
 
-				// 直接使用 schema.ToolCall
+				// 创建工具调用对象
 				schemaToolCall := &schema.ToolCall{
 					ID:   toolCallId,
 					Type: "function",
-					Function: schema.FunctionCall{ // 注意：值类型，不是指针
+					Function: schema.FunctionCall{
 						Name:      info.Name,
 						Arguments: string(inputStr),
 					},
 				}
+
+				// 记录待处理的工具调用
+				pendingToolCallsLock.Lock()
+				pendingToolCalls[toolCallId] = schemaToolCall
+				pendingToolCallsLock.Unlock()
 
 				// 构造工具调用事件
 				toolCallEvent := types.StreamEvent{
 					Type:     "tool-call",
 					RecordId: recordId,
 					Role:     "assistant",
-					ToolCall: schemaToolCall, // 直接使用 schema.ToolCall
+					ToolCall: schemaToolCall,
 				}
 
 				// 发送工具调用事件
@@ -382,19 +312,10 @@ func createToolCallbackHandlerWithEvents(conversation *mem.Conversation, toolEve
 					fmt.Printf("Tool events channel is full, skipping tool-call event\n")
 				}
 
-				// 保存工具调用消息到对话历史
-				toolCallMsg := &schema.Message{
-					Role:      schema.Assistant,
-					Content:   "",                                 // 工具调用消息内容为空
-					ToolCalls: []schema.ToolCall{*schemaToolCall}, // 使用相同的 schema.ToolCall
-				}
-				conversation.Append(toolCallMsg)
-				fmt.Printf("Saved tool call message with ID: %s\n", toolCallId)
+				fmt.Printf("Saved tool call with ID: %s\n", toolCallId)
 			}
 			return ctx
 		}).
-
-		// 在 OnEndFn 回调中：
 		OnEndFn(func(ctx context.Context, info *callbacks.RunInfo, output callbacks.CallbackOutput) context.Context {
 			if isToolCall(info) {
 				fmt.Printf("=== Tool Call Ended ===\n")
@@ -413,7 +334,7 @@ func createToolCallbackHandlerWithEvents(conversation *mem.Conversation, toolEve
 					Type:       "tool-result",
 					RecordId:   recordId,
 					Role:       "assistant",
-					ToolCallId: toolCallId, // 这个字段现在是 tool_call_id 格式
+					ToolCallId: toolCallId,
 					Result:     convertOutputToMap(output),
 				}
 
@@ -429,24 +350,7 @@ func createToolCallbackHandlerWithEvents(conversation *mem.Conversation, toolEve
 					fmt.Printf("Tool events channel is full, skipping tool-result event\n")
 				}
 
-				// 关键修复：正确保存工具返回结果到对话历史
-				var outputStr string
-				if outputBytes, err := json.Marshal(output); err == nil {
-					outputStr = string(outputBytes)
-				} else {
-					outputStr = fmt.Sprintf("%v", output)
-				}
-
-				// 使用正确的 ToolCallID 字段设置
-				toolResultMsg := &schema.Message{
-					Role:       schema.Tool,
-					Content:    outputStr,
-					ToolCallID: toolCallId, // 关键修复：设置 ToolCallID 字段
-					ToolName:   info.Name,  // 可选：设置工具名称
-				}
-
-				conversation.Append(toolResultMsg)
-				fmt.Printf("Saved tool result message with ToolCallID: %s\n", toolCallId)
+				fmt.Printf("Tool call %s completed\n", toolCallId)
 			}
 			return ctx
 		}).
@@ -454,83 +358,410 @@ func createToolCallbackHandlerWithEvents(conversation *mem.Conversation, toolEve
 			if isToolCall(info) {
 				fmt.Printf("=== Tool Call Error ===\n")
 				fmt.Printf("Tool Name: %s, Error: %v\n", info.Name, err)
+
+				// 获取工具调用ID并创建错误响应
+				if toolCallId, ok := ctx.Value("toolCallId").(string); ok {
+					toolResultMsg := &schema.Message{
+						Role:       schema.Tool,
+						Content:    fmt.Sprintf("Error: %v", err),
+						ToolCallID: toolCallId,
+						ToolName:   info.Name,
+					}
+					conversation.Append(toolResultMsg)
+					fmt.Printf("Saved tool error message with ToolCallID: %s\n", toolCallId)
+				}
 			}
 			return ctx
 		}).
 		Build()
 }
 
-// isToolCall 判断是否是工具调用
+// 修复StreamWithToolEvents方法，确保消息格式正确
+func (c *Client) StreamWithToolEvents(ctx context.Context, conversationID, message string) (*StreamReaderWithToolEvents, error) {
+	runner, err := einoagent.BuildEinoAgent(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build agent graph: %w", err)
+	}
+
+	conversation := c.memory.GetConversation(conversationID, true)
+
+	// 获取历史消息并进行格式验证和修复
+	historyMessages := conversation.GetMessages()
+
+	// 验证和修复消息格式
+	if err := c.validateAndFixMessages(historyMessages); err != nil {
+		fmt.Printf("Warning: message validation failed: %v\n", err)
+		// 可以选择清理有问题的消息
+		historyMessages = c.cleanInvalidMessages(historyMessages)
+	}
+
+	userMessage := &einoagent.UserMessage{
+		ID:      conversationID,
+		Query:   message,
+		History: historyMessages,
+	}
+
+	// 创建工具事件通道
+	toolEvents := make(chan ToolEvent, 10)
+	streamCtx, cancel := context.WithCancel(ctx)
+
+	// 创建自定义的消息处理回调
+	messageHandler := c.createMessageHandlerCallback(conversation, toolEvents, conversationID)
+
+	// 流式执行
+	sr, err := runner.Stream(ctx, userMessage, compose.WithCallbacks(c.cbHandler, messageHandler))
+	if err != nil {
+		cancel()
+		close(toolEvents)
+		return nil, fmt.Errorf("failed to stream: %w", err)
+	}
+
+	srs := sr.Copy(2)
+
+	go func() {
+		fullMsgs := make([]*schema.Message, 0)
+
+		defer func() {
+			srs[1].Close()
+			cancel()
+
+			// 添加用户消息
+			conversation.Append(schema.UserMessage(message))
+
+			// 处理完整响应
+			fullMsg, err := schema.ConcatMessages(fullMsgs)
+			if err != nil {
+				fmt.Printf("error concatenating messages: %v\n", err)
+				return
+			}
+
+			// 确保消息格式正确后再保存
+			if c.validateSingleMessage(fullMsg) == nil {
+				conversation.Append(fullMsg)
+			} else {
+				fmt.Printf("Warning: Invalid message format, not saving to conversation\n")
+			}
+		}()
+
+		for {
+			msg, err := srs[1].Recv()
+			if err != nil {
+				if err != io.EOF {
+					fmt.Printf("error receiving message: %v\n", err)
+				}
+				break
+			}
+			fullMsgs = append(fullMsgs, msg)
+		}
+	}()
+
+	return &StreamReaderWithToolEvents{
+		reader:     srs[0],
+		toolEvents: toolEvents,
+		ctx:        streamCtx,
+		cancel:     cancel,
+	}, nil
+}
+
+// 创建消息处理回调，确保工具调用和响应的配对
+func (c *Client) createMessageHandlerCallback(conversation *mem.Conversation, toolEvents chan ToolEvent, recordId string) callbacks.Handler {
+	// 追踪工具调用状态
+	toolCallTracker := &ToolCallTracker{
+		pendingCalls: make(map[string]*PendingToolCall),
+		mutex:        sync.Mutex{},
+	}
+
+	return callbacks.NewHandlerBuilder().
+		OnStartFn(func(ctx context.Context, info *callbacks.RunInfo, input callbacks.CallbackInput) context.Context {
+			if isToolCall(info) {
+				return toolCallTracker.handleToolStart(ctx, info, input, toolEvents, recordId)
+			}
+			return ctx
+		}).
+		OnEndFn(func(ctx context.Context, info *callbacks.RunInfo, output callbacks.CallbackOutput) context.Context {
+			if isToolCall(info) {
+				return toolCallTracker.handleToolEnd(ctx, info, output, conversation, toolEvents, recordId)
+			}
+			return ctx
+		}).
+		OnErrorFn(func(ctx context.Context, info *callbacks.RunInfo, err error) context.Context {
+			if isToolCall(info) {
+				return toolCallTracker.handleToolError(ctx, info, err, conversation, toolEvents, recordId)
+			}
+			return ctx
+		}).
+		Build()
+}
+
+// 工具调用追踪器
+type ToolCallTracker struct {
+	pendingCalls map[string]*PendingToolCall
+	mutex        sync.Mutex
+}
+
+type PendingToolCall struct {
+	ID        string
+	Name      string
+	Arguments string
+	StartTime time.Time
+	ToolCall  *schema.ToolCall
+}
+
+func (t *ToolCallTracker) handleToolStart(ctx context.Context, info *callbacks.RunInfo, input callbacks.CallbackInput, toolEvents chan ToolEvent, recordId string) context.Context {
+	toolCallId := fmt.Sprintf("call_%s_%d", info.Name, time.Now().UnixNano())
+	ctx = context.WithValue(ctx, "toolCallId", toolCallId)
+
+	inputStr, _ := json.Marshal(convertInputToMap(input))
+
+	schemaToolCall := &schema.ToolCall{
+		ID:   toolCallId,
+		Type: "function",
+		Function: schema.FunctionCall{
+			Name:      info.Name,
+			Arguments: string(inputStr),
+		},
+	}
+
+	// 记录待处理的工具调用
+	t.mutex.Lock()
+	t.pendingCalls[toolCallId] = &PendingToolCall{
+		ID:        toolCallId,
+		Name:      info.Name,
+		Arguments: string(inputStr),
+		StartTime: time.Now(),
+		ToolCall:  schemaToolCall,
+	}
+	t.mutex.Unlock()
+
+	// 发送工具调用事件
+	toolCallEvent := types.StreamEvent{
+		Type:     "tool-call",
+		RecordId: recordId,
+		Role:     "assistant",
+		ToolCall: schemaToolCall,
+	}
+
+	select {
+	case toolEvents <- ToolEvent{
+		Type:     "tool-call",
+		Event:    toolCallEvent,
+		RecordId: recordId,
+	}:
+		fmt.Printf("Sent tool-call event: %s\n", toolCallId)
+	default:
+		fmt.Printf("Tool events channel is full\n")
+	}
+
+	return ctx
+}
+
+func (t *ToolCallTracker) handleToolEnd(ctx context.Context, info *callbacks.RunInfo, output callbacks.CallbackOutput, conversation *mem.Conversation, toolEvents chan ToolEvent, recordId string) context.Context {
+	toolCallId, ok := ctx.Value("toolCallId").(string)
+	if !ok {
+		fmt.Printf("Warning: tool_call_id not found in context\n")
+		return ctx
+	}
+
+	t.mutex.Lock()
+	pendingCall, exists := t.pendingCalls[toolCallId]
+	if exists {
+		delete(t.pendingCalls, toolCallId)
+	}
+	t.mutex.Unlock()
+
+	if !exists {
+		fmt.Printf("Warning: no pending call found for %s\n", toolCallId)
+		return ctx
+	}
+
+	// 构造并保存工具调用消息（如果还没保存）
+	toolCallMsg := &schema.Message{
+		Role:      schema.Assistant,
+		Content:   "",
+		ToolCalls: []schema.ToolCall{*pendingCall.ToolCall},
+	}
+	conversation.Append(toolCallMsg)
+
+	// 构造工具响应消息
+	var outputStr string
+	if outputBytes, err := json.Marshal(output); err == nil {
+		outputStr = string(outputBytes)
+	} else {
+		outputStr = fmt.Sprintf("%v", output)
+	}
+
+	toolResultMsg := &schema.Message{
+		Role:       schema.Tool,
+		Content:    outputStr,
+		ToolCallID: toolCallId, // 关键：设置ToolCallID
+		ToolName:   info.Name,
+	}
+	conversation.Append(toolResultMsg)
+
+	// 发送工具结果事件
+	toolResultEvent := types.StreamEvent{
+		Type:       "tool-result",
+		RecordId:   recordId,
+		Role:       "assistant",
+		ToolCallId: toolCallId,
+		Result:     convertOutputToMap(output),
+	}
+
+	select {
+	case toolEvents <- ToolEvent{
+		Type:     "tool-result",
+		Event:    toolResultEvent,
+		RecordId: recordId,
+	}:
+		fmt.Printf("Sent tool-result event: %s\n", toolCallId)
+	default:
+		fmt.Printf("Tool events channel is full\n")
+	}
+
+	fmt.Printf("Tool call %s completed and saved\n", toolCallId)
+	return ctx
+}
+
+func (t *ToolCallTracker) handleToolError(ctx context.Context, info *callbacks.RunInfo, err error, conversation *mem.Conversation, toolEvents chan ToolEvent, recordId string) context.Context {
+	toolCallId, ok := ctx.Value("toolCallId").(string)
+	if !ok {
+		return ctx
+	}
+
+	t.mutex.Lock()
+	pendingCall, exists := t.pendingCalls[toolCallId]
+	if exists {
+		delete(t.pendingCalls, toolCallId)
+	}
+	t.mutex.Unlock()
+
+	if exists {
+		// 保存工具调用消息
+		toolCallMsg := &schema.Message{
+			Role:      schema.Assistant,
+			Content:   "",
+			ToolCalls: []schema.ToolCall{*pendingCall.ToolCall},
+		}
+		conversation.Append(toolCallMsg)
+
+		// 保存错误响应
+		toolResultMsg := &schema.Message{
+			Role:       schema.Tool,
+			Content:    fmt.Sprintf("Error: %v", err),
+			ToolCallID: toolCallId,
+			ToolName:   info.Name,
+		}
+		conversation.Append(toolResultMsg)
+	}
+
+	return ctx
+}
+
+// 消息验证和修复函数
+func (c *Client) validateAndFixMessages(messages []*schema.Message) error {
+	var errors []string
+
+	for i, msg := range messages {
+		if err := c.validateSingleMessage(msg); err != nil {
+			errors = append(errors, fmt.Sprintf("message %d: %v", i, err))
+		}
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("validation errors: %v", errors)
+	}
+	return nil
+}
+
+func (c *Client) validateSingleMessage(msg *schema.Message) error {
+	if msg.Role == schema.Tool {
+		if msg.ToolCallID == "" {
+			return fmt.Errorf("tool message missing ToolCallID")
+		}
+	}
+
+	if msg.Role == schema.Assistant && len(msg.ToolCalls) > 0 {
+		for j, toolCall := range msg.ToolCalls {
+			if toolCall.ID == "" {
+				return fmt.Errorf("tool_call %d missing ID", j)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (c *Client) cleanInvalidMessages(messages []*schema.Message) []*schema.Message {
+	cleanMessages := make([]*schema.Message, 0, len(messages))
+
+	for _, msg := range messages {
+		if c.validateSingleMessage(msg) == nil {
+			cleanMessages = append(cleanMessages, msg)
+		} else {
+			fmt.Printf("Removing invalid message: %+v\n", msg)
+		}
+	}
+
+	return cleanMessages
+}
+
+// 辅助函数保持不变
 func isToolCall(info *callbacks.RunInfo) bool {
-	// 根据你的工具类型进行判断
 	toolTypes := map[string]bool{
 		"TaskManager":        true,
 		"task_manager":       true,
-		"OpenFileTool":       true,
-		"open":               true,
-		"GitCloneFile":       true,
-		"gitclone":           true,
-		"EinoAssistant":      true,
+		"OpenFileTool":       false,
+		"open":               false,
+		"GitCloneFile":       false,
+		"gitclone":           false,
+		"EinoAssistant":      false,
 		"eino_tool":          true,
-		"DuckDuckGo":         true,
-		"duckduckgo":         true,
+		"DuckDuckGo":         false,
+		"duckduckgo":         false,
 		"calculator":         true,
 		"vocabulary_manager": true,
 	}
 
-	// 检查组件名称或类型，需要转换为字符串
 	componentStr := string(info.Component)
 	typeStr := string(info.Type)
-
 	return toolTypes[componentStr] || toolTypes[typeStr] || toolTypes[info.Name]
 }
 
-// convertInputToMap 将输入转换为map
 func convertInputToMap(input callbacks.CallbackInput) map[string]interface{} {
 	if input == nil {
 		return map[string]interface{}{}
 	}
 
-	// 尝试直接转换
 	if inputMap, ok := input.(map[string]interface{}); ok {
 		return inputMap
 	}
 
-	// 通过JSON序列化/反序列化转换
-	inputBytes, err := json.Marshal(input)
-	if err != nil {
-		return map[string]interface{}{"raw": fmt.Sprintf("%v", input)}
+	// 尝试JSON序列化再反序列化
+	if inputBytes, err := json.Marshal(input); err == nil {
+		var result map[string]interface{}
+		if json.Unmarshal(inputBytes, &result) == nil {
+			return result
+		}
 	}
 
-	var result map[string]interface{}
-	if err := json.Unmarshal(inputBytes, &result); err != nil {
-		return map[string]interface{}{"raw": string(inputBytes)}
-	}
-
-	return result
+	return map[string]interface{}{"input": fmt.Sprintf("%v", input)}
 }
 
-// convertOutputToMap 将输出转换为map
 func convertOutputToMap(output callbacks.CallbackOutput) map[string]interface{} {
 	if output == nil {
 		return map[string]interface{}{}
 	}
 
-	// 尝试直接转换
 	if outputMap, ok := output.(map[string]interface{}); ok {
 		return outputMap
 	}
 
-	// 通过JSON序列化/反序列化转换
-	outputBytes, err := json.Marshal(output)
-	if err != nil {
-		return map[string]interface{}{"raw": fmt.Sprintf("%v", output)}
+	if outputBytes, err := json.Marshal(output); err == nil {
+		var result map[string]interface{}
+		if json.Unmarshal(outputBytes, &result) == nil {
+			return result
+		}
 	}
 
-	var result map[string]interface{}
-	if err := json.Unmarshal(outputBytes, &result); err != nil {
-		return map[string]interface{}{"raw": string(outputBytes)}
-	}
-
-	return result
+	return map[string]interface{}{"output": fmt.Sprintf("%v", output)}
 }

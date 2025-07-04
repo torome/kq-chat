@@ -25,8 +25,10 @@ func NewGetChatRecordsLogic(ctx context.Context, svcCtx *svc.ServiceContext) *Ge
 }
 
 func (l *GetChatRecordsLogic) GetChatRecords(req *types.GetChatRecordsReq) (resp *types.GetChatRecordsResp, err error) {
-	l.Infof("GetChatRecords: botId=%s, page=%d, size=%d, sort=%s, conversationId=%s",
-		req.BotId, req.PageNumber, req.PageSize, req.Sort, req.ConversationId)
+	//userId := ctxdata.GetUidFromCtx(l.ctx)
+	//req.ConversationId = fmt.Sprintf("user_record_%d", userId)
+	//l.Infof("GetChatRecords: botId=%s, page=%d, size=%d, sort=%s, conversationId=%s",
+	//	req.BotId, req.PageNumber, req.PageSize, req.Sort, req.ConversationId)
 
 	// 模拟聊天记录数据
 	records := []types.ChatRecord{

@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"ai-agent/common/ctxdata"
 	"ai-agent/internal/svc/agent"
 	"ai-agent/internal/types"
 	"context"
@@ -85,10 +86,13 @@ func (l *WebsocketLogic) handleSendMessage(data interface{}) {
 	var sendData types.SendMessageReq
 	json.Unmarshal(dataBytes, &sendData)
 
+	userId := ctxdata.GetUidFromCtx(l.ctx)
+	fmt.Printf("userId: %d\n", userId)
+
 	l.Infof("Handling sendMessage: %+v", sendData)
 
 	// 生成记录ID
-	recordId := "test001" //fmt.Sprintf("record_%d", time.Now().UnixNano())
+	recordId := fmt.Sprintf("user_record_%d", userId)
 
 	// 使用真实的 Agent 处理
 	l.handleAgentStreamResponseWithTools(sendData, recordId)

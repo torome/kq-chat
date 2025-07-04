@@ -73,7 +73,7 @@ type GetChatRecordsReq struct {
 	PageNumber     int    `form:"pageNumber,default=1"`
 	PageSize       int    `form:"pageSize,default=10"`
 	Sort           string `form:"sort,default=desc"`
-	ConversationId string `form:"conversationId,omitempty"`
+	//ConversationId string `form:"conversationId,omitempty"`
 }
 
 type GetChatRecordsResp struct {
