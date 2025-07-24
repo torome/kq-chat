@@ -1,0 +1,47 @@
+syntax = "v1"
+
+info(
+	title: "数据可视化"
+	desc: "数据可视化"
+	author: "Chaojigeti"
+	email: "llbin@qq.com"
+	version: "v1"
+)
+
+type Template {
+	Id                  int64   `json:"id"`
+	Name               string  `json:"name"`
+	Image            string  `json:"image"`
+	Config              interface{}  `json:"config"`
+	Remark                string  `json:"remark"`
+	RowState           int64   `json:"rowState"`           // 频道
+	RowType  int64   `json:"rowType"`  // 权重
+}
+
+type TemplateListView {
+	Id                  int64   `json:"id"`
+	Name               string  `json:"name"`
+	Image            string  `json:"image"`
+	RowState           int64   `json:"rowState"`           // 频道
+	RowType  int64   `json:"rowType"`  // 权重
+}
+
+type (
+	TemplateListReq {
+		Page     int64 `json:"page"`
+		PageSize int64 `json:"pageSize"`
+	}
+	TemplateListResp {
+		List []TemplateListView `json:"list"`
+		Total int64 `json:"total"`
+	}
+)
+
+type (
+	TemplateDetailReq {
+		Id int64 `json:"id"`
+	}
+	TemplateDetailResp {
+		Row       Template  `json:"row"`
+	}
+)

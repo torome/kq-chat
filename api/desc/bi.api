@@ -1,0 +1,104 @@
+syntax = "v1"
+
+info (
+	title:   "BI可视化服务"
+	desc:    "数据大屏，BI，可视化"
+	author:  "BinLee"
+	email:   "llbin@qq.com"
+	version: "v1"
+)
+
+import (
+	"datav/datav.api"
+	"datav/project.api"
+	"datav/component.api"
+	"datav/componentClassify.api"
+	"datav/template.api"
+)
+
+//=====================================> bi-datav v1 <=================================
+//no need login
+@server (
+	prefix: bi/v1
+	group:  datav
+)
+service bi {
+	@doc "chart data"
+	@handler chartData
+	post /chart/data (ChartDataReq) returns (ChartDataResp)
+
+	@doc "数据输出"
+	@handler transform
+	post /export (TransformReq) returns (TransformResp)
+
+	@doc "数据集索引"
+	@handler datasetSelect
+	post /dataset/select (DatasetSelectReq) returns (DatasetSelectResp)
+
+	@doc "授权访问"
+	@handler Login
+	post /login (LoginReq) returns (LoginResp)
+}
+
+@server (
+	prefix: bi/v1
+	group:  project
+)
+service bi {
+	@doc "项目详情"
+	@handler projectDetail
+	post /project/detail (ProjectDetailReq) returns (ProjectDetailResp)
+}
+
+//need login
+@server (
+	prefix: bi/v1
+	group:  project
+	jwt:    JwtAuth
+)
+service bi {
+	@doc "project list"
+	@handler projectList
+	post /project/index (ProjectListReq) returns (ProjectListResp)
+
+	@doc "创建模版"
+	@handler createProject
+	post /project/add (CreateProjectReq) returns (CreateProjectResp)
+
+	@doc "更新项目"
+	@handler updateProject
+	post /project/edit (UpdateProjectReq) returns (UpdateProjectResp)
+
+	@doc "更新项目配置"
+	@handler updateProjectConfig
+	post /projectConfig/edit (UpdateProjectConfigReq) returns (UpdateProjectConfigResp)
+
+	@doc "删除项目"
+	@handler deleteProject
+	post /project/del (DeleteProjectReq) returns (DeleteProjectResp)
+
+	@doc "template list"
+	@handler templateList
+	post /template/index (TemplateListReq) returns (TemplateListResp)
+
+	@doc "模版详情"
+	@handler templateDetail
+	post /template/detail (TemplateDetailReq) returns (TemplateDetailResp)
+
+	@doc "template list"
+	@handler componentClassifyList
+	post /componentClassify/index (ComponentClassifyListReq) returns (ComponentClassifyListResp)
+
+	@doc "模版详情"
+	@handler ComponentClassifyDetail
+	post /componentClassify/detail (ComponentClassifyDetailReq) returns (ComponentClassifyDetailResp)
+
+	@doc "template list"
+	@handler componentList
+	post /component/index (ComponentListReq) returns (ComponentListResp)
+
+	@doc "模版详情"
+	@handler ComponentDetail
+	post /component/detail (ComponentDetailReq) returns (ComponentDetailResp)
+}
+

@@ -1,0 +1,93 @@
+syntax = "v1"
+
+info(
+	title: "数据可视化"
+	desc: "数据可视化"
+	author: "Chaojigeti"
+	email: "llbin@qq.com"
+	version: "v1"
+)
+
+type Project {
+	Id                  int64   `json:"id"`
+	Name               string  `json:"name"`
+	Image            string  `json:"image"`
+	TemplateId  int64   `json:"templateId"` // 剩余天数
+	Config              interface{}  `json:"config"`
+	Remark                string  `json:"remark"`
+	RowState           int64   `json:"rowState"`           // 状态：0下架 1上架
+	RowType  int64   `json:"rowType"`  // 套餐类型：0免费版 1演示版 2试用版 3个人版 4企业版 5定制版
+	Days  int64   `json:"days"` // 剩余天数
+}
+
+type ProjectListView {
+	Id                  int64   `json:"id"`
+	Name               string  `json:"name"`
+	Image            string  `json:"image"`
+	RowState           int64   `json:"rowState"`           // 状态：0下架 1上架
+	RowType  int64   `json:"rowType"`  // 套餐类型 0免费版 1演示版 2试用版 3个人版 4企业版 5定制版
+	Days  int64   `json:"days"` // 剩余天数
+}
+
+type (
+	ProjectListReq {
+		Page     int64 `json:"page"`
+		PageSize int64 `json:"pageSize"`
+	}
+	ProjectListResp {
+		List []ProjectListView `json:"list"`
+		Total int64 `json:"total"`
+	}
+)
+
+type (
+	CreateProjectReq {
+		Name               string  `json:"name"`
+		Config              map[string]interface{}  `json:"config"`
+		Remark                string  `json:"remark"`
+		TemplateId  int64   `json:"templateId"`  // 权重
+	}
+	CreateProjectResp {
+		Id int64 `json:"id"`
+	}
+)
+
+type (
+	ProjectDetailReq {
+		Id int64 `json:"id"`
+	}
+	ProjectDetailResp {
+		Row       Project  `json:"row"`
+	}
+)
+
+type (
+	UpdateProjectReq {
+		Id    int64  `json:"id"`
+		Name               string  `json:"name"`
+		Remark                string  `json:"remark"`
+		RowState           int64   `json:"rowState"`           // 频道
+	}
+	UpdateProjectResp {
+		Id int64 `json:"id"`
+	}
+)
+
+type (
+	UpdateProjectConfigReq {
+		Id    int64  `json:"id"`
+		Config              map[string]interface{}  `json:"config"`
+	}
+	UpdateProjectConfigResp {
+		Id int64 `json:"id"`
+	}
+)
+
+type (
+	DeleteProjectReq {
+		Id    int64  `json:"id"`
+	}
+	DeleteProjectResp {
+
+	}
+)

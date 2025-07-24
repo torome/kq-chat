@@ -1,0 +1,47 @@
+Name: bi-api
+Host: 0.0.0.0
+Port: 1009
+Mode: dev
+Timeout: 20000
+
+#jwtAuth
+JwtAuth:
+  AccessSecret: ae0536f9-6450-4606-8e13-5a19ed505da0
+  AccessExpire: 31536000
+
+#监控
+Prometheus:
+  Host: 0.0.0.0
+  Port: 4006
+  Path: /metrics
+
+#链路追踪
+Telemetry:
+  Name: bi-api
+  Endpoint: http://jaeger:14268/api/traces
+  Sampler: 1.0
+  Batcher: jaeger
+
+Log:
+  ServiceName: bi-api
+  Level: error
+
+DB:
+  DataSource: root:root@tcp(127.0.0.1:3306)/p15_logo?charset=utf8mb4&parseTime=true&loc=Asia%2FShanghai
+Cache:
+  - Host: 127.0.0.1:6379
+    Pass:
+
+#rpc
+UsercenterRpcConf:
+  Endpoints:
+    - 12.0.0.1:2004
+  NonBlock: true
+
+BiRpcConf:
+  Endpoints:
+    - 127.0.0.1:2009
+  NonBlock: true
+
+LogoConf:
+  Url: http://15.p/uploads

@@ -1,0 +1,44 @@
+syntax = "v1"
+
+info(
+	title: "数据可视化"
+	desc: "数据可视化"
+	author: "Chaojigeti"
+	email: "llbin@qq.com"
+	version: "v1"
+)
+
+type ComponentClassify {
+	Id                  int64   `json:"id"`
+	Name               string  `json:"name"`
+	Remark                string  `json:"remark"`
+	RowState           int64   `json:"rowState"`           // 频道
+	Weigh  int64   `json:"weigh"`  // 权重
+}
+
+type ComponentClassifyListView {
+	Id                  int64   `json:"id"`
+	Name               string  `json:"name"`
+	RowState           int64   `json:"rowState"`           // 频道
+	Weigh  int64   `json:"weigh"`  // 权重
+}
+
+type (
+	ComponentClassifyListReq {
+		Page     int64 `json:"page"`
+		PageSize int64 `json:"pageSize"`
+	}
+	ComponentClassifyListResp {
+		List []ComponentClassifyListView `json:"list"`
+		Total int64 `json:"total"`
+	}
+)
+
+type (
+	ComponentClassifyDetailReq {
+		Id int64 `json:"id"`
+	}
+	ComponentClassifyDetailResp {
+		Row       ComponentClassify  `json:"row"`
+	}
+)

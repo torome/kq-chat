@@ -1,0 +1,68 @@
+syntax = "v1"
+
+info(
+	title: "设计方案"
+	desc: "设计方案"
+	author: "BinLee"
+	email: "llbin@qq.com"
+	version: "v1"
+)
+
+type (
+	ChartDataReq {
+		Uuid string `json:"uuid"`
+		Body map[string]interface{} `json:"body"`
+		Params map[string]string `json:"params"`
+	}
+	ChartDataResp {
+		Uuid string `json:"uuid"`
+		Remark string `json:"remark"`
+		Meta map[string]interface{} `json:"meta"`
+		Data interface{} `json:"data"`
+		Extra map[string]interface{} `json:"extra,omitempty"`
+	}
+)
+
+type (
+
+	TransformReq {
+		Uuid string `json:"uuid"`
+		Body map[string]interface{} `json:"body"`
+		Params map[string]string `json:"params"`
+	}
+	TransformResp {
+		Uuid string `json:"uuid"`
+		Remark string `json:"remark"`
+		Meta map[string]interface{} `json:"meta"`
+		Data interface{} `json:"data"`
+		Extra map[string]interface{} `json:"extra,omitempty"`
+	}
+)
+
+type (
+	DatasetListView {
+		Uuid string `json:"uuid"`
+		Remark string `json:"remark"`
+	}
+	DatasetSelectReq {
+		ProjectId int64 `json:"projectId"`
+	}
+	DatasetSelectResp {
+		List []DatasetListView `json:"list"`
+	}
+)
+
+type (
+	LoginReq {
+		uuid string `json:"uuid"`
+		Body map[string]interface{} `json:"body"`
+		params map[string]string `json:"params"`
+	}
+	LoginResp {
+		Uuid string `json:"uuid"`
+		Remark string `json:"remark"`
+		Meta map[string]interface{} `json:"meta"`
+		Data interface{} `json:"data"`
+		Extra map[string]interface{} `json:"extra,omitempty"`
+	}
+)
